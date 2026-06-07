@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, WebSocket, WebSocketDisconnect  # ← NEW: Added WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
@@ -18,6 +18,7 @@ from sse_starlette.sse import EventSourceResponse
 import redis.asyncio as redis
 from bson import ObjectId
 import sys
+from websocket_manager import manager as ws_manager  # ← NEW: Import shared WebSocket connection manager
 
 # Configure logging with forced flushing for Render
 logging.basicConfig(
@@ -1019,31 +1020,64 @@ async def sse_endpoint():
     
     return EventSourceResponse(event_generator())
 
-# Helper function to broadcast events via Redis or in-memory queue
+
+# ← NEW: WebSocket endpoint — dashboard connects here for instant push updates
+@app.websocket("/ws/dashboard")
+async def websocket_dashboard(websocket: WebSocket):
+    """Real-time WebSocket endpoint for the dashboard.
+    Each dashboard tab that opens creates one persistent connection here.
+    The server pushes breach/heartbeat/offline events to all connections instantly.
+    """
+    await ws_manager.connect(websocket)  # ← NEW: Register this client
+    try:
+        # ← NEW: Send an immediate welcome message so the frontend knows it's live
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "message": "WebSocket connected to Hotel Security Dashboard",
+            "timestamp": get_ist_time().isoformat()
+        }))
+
+        # ← NEW: Keep the connection alive by listening for any client messages
+        # (We don't expect any, but we must await to avoid closing immediately)
+        while True:
+            data = await websocket.receive_text()
+            # ← NEW: Echo-back ping/pong to keep the connection alive through proxies
+            if data == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+
+    except WebSocketDisconnect:  # ← NEW: Client closed their browser tab cleanly
+        ws_manager.disconnect(websocket)
+    except Exception as e:  # ← NEW: Network drop, Render timeout, etc.
+        logger.warning(f"WebSocket connection error: {e}")
+        ws_manager.disconnect(websocket)
+
+# Helper function to broadcast events via Redis, in-memory SSE queue, AND WebSocket
 async def broadcast_event(event_type: str, data: dict):
-    """Broadcast event to all SSE clients via Redis or in-memory queue"""
-    message = json.dumps({
+    """Broadcast event to all SSE clients via Redis or in-memory queue, and to all WebSocket clients."""
+    message = {
         "type": event_type,
         "data": data,
         "timestamp": get_ist_time().isoformat()
-    })
-    
+    }
+    message_str = json.dumps(message)
+
+    # ← NEW: Push to ALL connected WebSocket dashboard clients instantly
+    await ws_manager.broadcast(message)
+
     if redis_client:
         try:
-            # Use Redis for multi-worker support
-            await redis_client.publish("sse_events", message)
+            # Use Redis for multi-worker SSE support
+            await redis_client.publish("sse_events", message_str)
         except Exception as e:
-            # Downgrade to warning to reduce noise if Redis isn't running
             logger.warning(f"Could not broadcast via Redis (likely down): {e}")
     else:
-        # Fallback: Use in-memory queue for all connected clients
+        # Fallback: Use in-memory queue for all connected SSE clients
         if sse_clients:
             logger.info(f"📢 Broadcasting {event_type} to {len(sse_clients)} SSE clients via in-memory queue")
             for client_queue in sse_clients:
                 try:
-                    # Non-blocking put to avoid slowing down the application
-                    client_queue.put_nowait(message)
+                    client_queue.put_nowait(message_str)
                 except asyncio.QueueFull:
                     logger.warning("SSE client queue full, dropping message")
         else:
-            logger.debug(f"No SSE clients connected, skip broadcast: {event_type}")
+            logger.debug(f"No SSE clients connected, skip SSE broadcast: {event_type}")

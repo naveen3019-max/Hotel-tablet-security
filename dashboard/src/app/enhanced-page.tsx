@@ -1,26 +1,22 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react"; // ← NEW: added useCallback
+import { useWebSocket } from "../hooks/useWebSocket"; // ← NEW: our WebSocket hook
+import LiveIndicator from "../components/LiveIndicator"; // ← NEW: live status badge
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
-const DASHBOARD_VERSION = "v2.9-force-redeploy"; // Force Vercel to redeploy with correct timestamp fix
+const DASHBOARD_VERSION = "v3.0-websocket-live";
 
 // Format timestamp to Indian Standard Time
 const formatISTTime = (dateString: string): string => {
   try {
-    // Backend sends IST timestamps like: 2026-02-13T16:58:10.033921+05:30
-    // Parse the timestamp directly without timezone conversion
     const match = dateString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-    if (!match) {
-      return dateString;
-    }
-    
+    if (!match) return dateString;
     const [_, year, month, day, hour24, minute, second] = match;
     let hour = parseInt(hour24);
-    const ampm = hour >= 12 ? 'PM' : 'AM';
-    hour = hour % 12 || 12; // Convert to 12-hour format
-    
-    return `${day}/${month}/${year} ${String(hour).padStart(2, '0')}:${minute}:${second} ${ampm} IST`;
-  } catch (e) {
+    const ampm = hour >= 12 ? "PM" : "AM";
+    hour = hour % 12 || 12;
+    return `${day}/${month}/${year} ${String(hour).padStart(2, "0")}:${minute}:${second} ${ampm} IST`;
+  } catch {
     return dateString;
   }
 };
@@ -36,13 +32,23 @@ type Device = {
 };
 
 type Alert = {
+  id?: string;
   type: string;
   deviceId?: string;
   roomId?: string;
-  payload?: any;
+  payload?: Record<string, unknown>;
   ts: string;
   acknowledged?: boolean;
   notes?: string;
+  message?: string;
+};
+
+// ← NEW: Toast notification shown when a breach fires
+type Toast = {
+  id: number;
+  deviceId: string;
+  roomId?: string;
+  reason?: string;
 };
 
 export default function EnhancedDashboard() {
@@ -51,128 +57,191 @@ export default function EnhancedDashboard() {
   const [filter, setFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
-  const [eventSource, setEventSource] = useState<EventSource | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Initialize SSE connection for real-time updates
+  // ← NEW: Toast queue for breach notifications
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [toastCounter, setToastCounter] = useState(0);
+
+  // ← NEW: Connect WebSocket hook — this drives all live updates
+  const { lastMessage, connectionStatus } = useWebSocket(API);
+
+  // ← NEW: Helper to add a breach toast and auto-dismiss it after 8 seconds
+  const addToast = useCallback((deviceId: string, roomId?: string, reason?: string) => {
+    setToastCounter((c) => {
+      const id = c + 1;
+      setToasts((prev) => [...prev, { id, deviceId, roomId, reason }]);
+      // ← NEW: Auto-remove toast after 8 seconds
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 8000);
+      return id;
+    });
+  }, []);
+
+  // ← NEW: React to every WebSocket message the server pushes
+  useEffect(() => {
+    if (!lastMessage) return;
+
+    const { type, data } = lastMessage;
+    const d = data as Record<string, unknown> | undefined;
+
+    switch (type) {
+      case "device_update": {
+        // ← NEW: Update single device in-place without re-fetching all devices
+        if (!d?.deviceId) break;
+        setDevices((prev) => {
+          const idx = prev.findIndex((dev) => dev.deviceId === d.deviceId);
+          const updated: Device = {
+            ...(idx >= 0 ? prev[idx] : { deviceId: d.deviceId as string }),
+            status: (d.status as string) ?? prev[idx]?.status,
+            battery: d.battery !== undefined ? (d.battery as number) : prev[idx]?.battery,
+            rssi: d.rssi !== undefined ? (d.rssi as number) : prev[idx]?.rssi,
+            lastSeen: (d.lastSeen as string) ?? prev[idx]?.lastSeen,
+          };
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy[idx] = updated;
+            return copy;
+          }
+          return [...prev, updated];
+        });
+        break;
+      }
+
+      case "alert": {
+        // ← NEW: Prepend the incoming alert to the list — no fetch needed
+        if (!d?.type) break;
+        const newAlert: Alert = {
+          type: d.type as string,
+          deviceId: d.deviceId as string,
+          roomId: d.roomId as string | undefined,
+          ts: lastMessage.timestamp ?? new Date().toISOString(),
+          acknowledged: false,
+          message: d.message as string | undefined,
+        };
+        setAlerts((prev) => [newAlert, ...prev].slice(0, 100));
+
+        // ← NEW: Show red toast notification for breach events
+        if (d.type === "breach") {
+          addToast(d.deviceId as string, d.roomId as string | undefined, d.message as string | undefined);
+
+          // ← NEW: Mark the device as breached instantly in the device grid
+          setDevices((prev) =>
+            prev.map((dev) =>
+              dev.deviceId === d.deviceId ? { ...dev, status: "breach" } : dev
+            )
+          );
+        }
+        break;
+      }
+
+      case "device_recovered": {
+        // ← NEW: Clear breach state when device comes back online
+        if (!d?.deviceId) break;
+        setDevices((prev) =>
+          prev.map((dev) =>
+            dev.deviceId === d.deviceId ? { ...dev, status: "ok" } : dev
+          )
+        );
+        break;
+      }
+
+      case "device_offline":
+      case "device_deleted": {
+        // ← NEW: Remove or mark offline the device that disconnected
+        if (!d?.deviceId) break;
+        if (type === "device_deleted") {
+          setDevices((prev) => prev.filter((dev) => dev.deviceId !== d.deviceId));
+        } else {
+          setDevices((prev) =>
+            prev.map((dev) =>
+              dev.deviceId === d.deviceId ? { ...dev, status: "offline" } : dev
+            )
+          );
+        }
+        break;
+      }
+
+      case "database_cleared": {
+        // ← NEW: Wipe the UI when an admin clears the database
+        setDevices([]);
+        setAlerts([]);
+        break;
+      }
+    }
+  }, [lastMessage, addToast]);
+
+  // ── Initial data load + polling fallback ──────────────────────────────────
+  // ← NEW: Fetch initial data once on mount so the dashboard isn't blank
   useEffect(() => {
     if (!API) {
       setError("API URL not configured");
       setIsLoading(false);
       return;
     }
-    
-    // Try SSE, fallback to polling
-    try {
-      const es = new EventSource(`${API}/api/events`);
-      
-      es.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "device_update" && data.device && data.device.deviceId) {
-            setDevices((prev) => {
-              const idx = prev.findIndex((d) => d && d.deviceId === data.device.deviceId);
-              if (idx >= 0) {
-                const updated = [...prev];
-                updated[idx] = data.device;
-                return updated;
-              }
-              return [...prev, data.device];
-            });
-          } else if (data.type === "alert" && data.alert) {
-            setAlerts((prev) => [data.alert, ...prev].slice(0, 100));
-          }
-        } catch (err) {
-          console.error("Error parsing SSE message", err);
-        }
-      };
-      
-      es.onerror = () => {
-        console.error("SSE connection failed, falling back to polling");
-        es.close();
-        setEventSource(null);
-      };
-      
-      setEventSource(es);
-      
-      return () => es.close();
-    } catch (e) {
-      console.warn("SSE not available, using polling");
-    }
-  }, []);
 
-  // Polling fallback
-  useEffect(() => {
-    if (eventSource) return; // SSE active, skip polling
-    if (!API) return; // No API configured
-    
-    const tick = async () => {
+    const fetchAll = async () => {
       try {
-        setIsLoading(true);
         setError(null);
-        
         const [devicesRes, alertsRes] = await Promise.all([
           fetch(`${API}/api/devices`),
-          fetch(`${API}/api/alerts/recent?limit=100`)
+          fetch(`${API}/api/alerts/recent?limit=100`),
         ]);
-        
+
         if (!devicesRes.ok || !alertsRes.ok) {
-          console.error("API request failed", devicesRes.status, alertsRes.status);
           setError(`API Error: ${devicesRes.status} / ${alertsRes.status}`);
           setIsLoading(false);
           return;
         }
-        
+
         const d = await devicesRes.json();
         const a = await alertsRes.json();
-        
-        // Ensure d is an array and filter out any undefined/null values
-        const validDevices = Array.isArray(d) ? d.filter(device => device && device.deviceId) : [];
-        const validAlerts = Array.isArray(a) ? a.filter(alert => alert) : [];
-        
-        setDevices(validDevices);
-        setAlerts(validAlerts.reverse());
+
+        setDevices(Array.isArray(d) ? d.filter((dev: Device) => dev?.deviceId) : []);
+        // ← NEW: Reverse so newest alert is first
+        setAlerts(Array.isArray(a) ? [...a].reverse().slice(0, 100) : []);
         setIsLoading(false);
-        setError(null);
       } catch (e) {
-        console.error("Failed to fetch data", e);
         setError(e instanceof Error ? e.message : "Failed to fetch data");
         setIsLoading(false);
       }
     };
-    
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => clearInterval(id);
-  }, [eventSource]);
 
+    fetchAll();
+
+    // ← NEW: Fallback polling every 10s in case WebSocket drops between retries
+    const pollId = setInterval(fetchAll, 10000);
+    return () => clearInterval(pollId);
+  }, []);
+
+  // ── Derived lists ──────────────────────────────────────────────────────────
   const filteredDevices = devices.filter((d) => {
-    if (!d || !d.deviceId) return false; // Safety check
+    if (!d?.deviceId) return false;
     if (filter !== "all" && d.status !== filter) return false;
-    if (searchQuery && !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) 
-        && !d.roomId?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (
+      searchQuery &&
+      !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !d.roomId?.toLowerCase().includes(searchQuery.toLowerCase())
+    )
+      return false;
     return true;
   });
 
   const acknowledgeAlert = async (alert: Alert) => {
     try {
-      const deviceId = alert.deviceId || alert.payload?.deviceId;
-      if (!deviceId) {
-        console.error("Alert missing deviceId", alert);
-        return;
-      }
-      
+      const deviceId = alert.deviceId ?? (alert.payload?.deviceId as string);
+      if (!deviceId) return;
       await fetch(`${API}/api/alerts/acknowledge`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           device_id: deviceId,
           timestamp: alert.ts,
-          notes: "Acknowledged from dashboard"
-        })
+          notes: "Acknowledged from dashboard",
+        }),
       });
-      
       setAlerts((prev) =>
         prev.map((a) => (a === alert ? { ...a, acknowledged: true } : a))
       );
@@ -185,8 +254,9 @@ export default function EnhancedDashboard() {
     switch (status) {
       case "ok": return "bg-green-500";
       case "breach": return "bg-red-500 animate-pulse";
+      case "offline": return "bg-gray-400";
       case "missing": return "bg-yellow-500";
-      default: return "bg-gray-500";
+      default: return "bg-gray-400";
     }
   };
 
@@ -206,6 +276,31 @@ export default function EnhancedDashboard() {
 
   return (
     <main className="min-h-screen bg-gray-50 p-6">
+      {/* ← NEW: Toast container — stacks in bottom-right, auto-dismisses */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className="bg-red-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-start gap-3 max-w-sm animate-bounce"
+          >
+            <span className="text-2xl">🚨</span>
+            <div>
+              <p className="font-bold text-sm">BREACH DETECTED</p>
+              <p className="text-xs mt-0.5">Device: {toast.deviceId}</p>
+              {toast.roomId && <p className="text-xs">Room: {toast.roomId}</p>}
+              {toast.reason && <p className="text-xs opacity-80 mt-1">{toast.reason}</p>}
+            </div>
+            {/* ← NEW: Manual dismiss button */}
+            <button
+              onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+              className="ml-auto text-white opacity-70 hover:opacity-100 text-lg leading-none"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Error Display */}
         {error && (
@@ -219,29 +314,26 @@ export default function EnhancedDashboard() {
             </div>
           </div>
         )}
-        
-        {/* Loading Display */}
+
+        {/* Loading */}
         {isLoading && devices.length === 0 && (
           <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 text-center">
             <div className="text-blue-600 font-semibold">🔄 Loading dashboard...</div>
           </div>
         )}
-        
+
         {/* Header */}
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Hotel Tablet Security</h1>
             <p className="text-gray-600">
-              {devices.length} devices • {alerts.filter((a) => a && !a.acknowledged).length} unacknowledged alerts
+              {devices.length} devices •{" "}
+              {alerts.filter((a) => a && !a.acknowledged).length} unacknowledged alerts
               <span className="ml-3 text-xs text-gray-400">{DASHBOARD_VERSION}</span>
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
-            <span className="text-sm text-gray-600">
-              {eventSource ? "Live (SSE)" : "Polling"}
-            </span>
-          </div>
+          {/* ← NEW: LiveIndicator replaces the old hardcoded green dot */}
+          <LiveIndicator status={connectionStatus} />
         </div>
 
         {/* Controls */}
@@ -261,6 +353,7 @@ export default function EnhancedDashboard() {
             <option value="all">All Devices</option>
             <option value="ok">OK</option>
             <option value="breach">Breach</option>
+            <option value="offline">Offline</option>
             <option value="missing">Missing</option>
           </select>
         </div>
@@ -274,57 +367,52 @@ export default function EnhancedDashboard() {
                 No devices found. Register a device using the Android app.
               </div>
             )}
-            {filteredDevices.filter(d => d && d.deviceId).map((d) => (
-              <div
-                key={d.deviceId}
-                className="bg-white rounded-lg shadow-md p-5 hover:shadow-lg transition-shadow"
-              >
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <h3 className="font-bold text-lg">{d.deviceId}</h3>
-                    <p className="text-sm text-gray-600">Room {d.roomId || "—"}</p>
+            {filteredDevices
+              .filter((d) => d?.deviceId)
+              .map((d) => (
+                <div
+                  key={d.deviceId}
+                  className={`bg-white rounded-lg shadow-md p-5 hover:shadow-lg transition-shadow ${
+                    d.status === "breach" ? "border-2 border-red-400" : ""
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h3 className="font-bold text-lg">{d.deviceId}</h3>
+                      <p className="text-sm text-gray-600">Room {d.roomId || "—"}</p>
+                    </div>
+                    <span className={`w-4 h-4 rounded-full ${getStatusColor(d.status)}`} />
                   </div>
-                  <span className={`w-4 h-4 rounded-full ${getStatusColor(d.status)}`}></span>
-                </div>
-                
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Status:</span>
-                    <span className="font-semibold">{d.status || "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Battery:</span>
-                    <span className={getBatteryColor(d.battery)}>
-                      {d.battery ? `${d.battery}%` : "—"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">RSSI:</span>
-                    <span className={getRssiColor(d.rssi)}>
-                      {d.rssi ? `${d.rssi} dBm` : "—"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">IP:</span>
-                    <span className="font-mono text-xs">{d.ip || "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Last Seen:</span>
-                    <span className="text-xs">
-                      {d.lastSeen ? formatISTTime(d.lastSeen) : "—"}
-                    </span>
-                  </div>
-                  {d.lastSeen && (
-                    <div className="flex justify-between text-xs text-gray-400">
-                      <span>Raw:</span>
-                      <span className="font-mono truncate ml-2" title={d.lastSeen}>
-                        {d.lastSeen.substring(0, 19)}
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Status:</span>
+                      <span className="font-semibold">{d.status || "—"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Battery:</span>
+                      <span className={getBatteryColor(d.battery)}>
+                        {d.battery ? `${d.battery}%` : "—"}
                       </span>
                     </div>
-                  )}
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">RSSI:</span>
+                      <span className={getRssiColor(d.rssi)}>
+                        {d.rssi ? `${d.rssi} dBm` : "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">IP:</span>
+                      <span className="font-mono text-xs">{d.ip || "—"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Last Seen:</span>
+                      <span className="text-xs">
+                        {d.lastSeen ? formatISTTime(d.lastSeen) : "—"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
           </div>
           {filteredDevices.length === 0 && (
             <div className="text-center text-gray-500 py-12">
@@ -340,62 +428,92 @@ export default function EnhancedDashboard() {
             <div className="max-h-96 overflow-y-auto">
               {alerts.length === 0 && !isLoading && (
                 <div className="text-center py-8 text-gray-500">
-                  No alerts yet. Breaches will appear here.
+                  No alerts yet. Breaches will appear here instantly.
                 </div>
               )}
-              {alerts.filter(a => a && a.type).map((a, i) => (
-                <div
-                  key={i}
-                  className={`border-b p-4 hover:bg-gray-50 cursor-pointer ${
-                    a.acknowledged ? "opacity-50" : ""
-                  }`}
-                  onClick={() => setSelectedAlert(a)}
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`px-2 py-1 rounded text-xs font-semibold ${
-                            a.type === "breach"
-                              ? "bg-red-100 text-red-800"
-                              : "bg-yellow-100 text-yellow-800"
-                          }`}
-                        >
-                          {a.type}
-                        </span>
-                        <span className="text-sm font-medium">
-                          {a.deviceId || a.payload?.deviceId || 'Unknown'} • Room {a.roomId || a.payload?.roomId || 'Unknown'}
-                        </span>
-                        {a.acknowledged && (
-                          <span className="text-xs text-green-600">✓ Acknowledged</span>
+              {alerts
+                .filter((a) => a?.type)
+                .map((a, i) => (
+                  <div
+                    key={a.id ?? i}
+                    className={`border-b p-4 hover:bg-gray-50 cursor-pointer ${
+                      a.acknowledged ? "opacity-50" : ""
+                    } ${a.type === "breach" && !a.acknowledged ? "bg-red-50" : ""}`}
+                    onClick={() => setSelectedAlert(a)}
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2 py-1 rounded text-xs font-semibold ${
+                              a.type === "breach"
+                                ? "bg-red-100 text-red-800"
+                                : "bg-yellow-100 text-yellow-800"
+                            }`}
+                          >
+                            {a.type}
+                          </span>
+                          <span className="text-sm font-medium">
+                            {a.deviceId || (a.payload?.deviceId as string) || "Unknown"} •{" "}
+                            Room {a.roomId || (a.payload?.roomId as string) || "Unknown"}
+                          </span>
+                          {a.acknowledged && (
+                            <span className="text-xs text-green-600">✓ Acknowledged</span>
+                          )}
+                        </div>
+                        {a.message && (
+                          <p className="mt-1 text-xs text-gray-600">{a.message}</p>
+                        )}
+                        {a.payload && Object.keys(a.payload).length > 0 && (
+                          <pre className="mt-2 text-xs text-gray-600 overflow-auto">
+                            {JSON.stringify(a.payload, null, 2)}
+                          </pre>
                         )}
                       </div>
-                      <pre className="mt-2 text-xs text-gray-600 overflow-auto">
-                        {JSON.stringify(a.payload || {}, null, 2)}
-                      </pre>
-                    </div>
-                    <div className="text-right ml-4">
-                      <div className="text-xs text-gray-500">
-                        {formatISTTime(a.ts)}
+                      <div className="text-right ml-4">
+                        <div className="text-xs text-gray-500">{formatISTTime(a.ts)}</div>
+                        {!a.acknowledged && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              acknowledgeAlert(a);
+                            }}
+                            className="mt-2 text-xs text-blue-600 hover:underline"
+                          >
+                            Acknowledge
+                          </button>
+                        )}
                       </div>
-                      {!a.acknowledged && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            acknowledgeAlert(a);
-                          }}
-                          className="mt-2 text-xs text-blue-600 hover:underline"
-                        >
-                          Acknowledge
-                        </button>
-                      )}
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
             </div>
           </div>
         </section>
+
+        {/* Selected Alert Modal */}
+        {selectedAlert && (
+          <div
+            className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50"
+            onClick={() => setSelectedAlert(null)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-2xl p-6 max-w-lg w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-bold mb-4">Alert Details</h3>
+              <pre className="text-xs bg-gray-50 p-4 rounded overflow-auto max-h-80">
+                {JSON.stringify(selectedAlert, null, 2)}
+              </pre>
+              <button
+                onClick={() => setSelectedAlert(null)}
+                className="mt-4 px-4 py-2 bg-gray-800 text-white rounded hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
