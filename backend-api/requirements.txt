@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+pydantic-settings
+motor
+pymongo
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+aiosmtplib
+httpx
+celery
+redis
+sse-starlette
+flower
+pytest
+pytest-asyncio
