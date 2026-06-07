@@ -69,12 +69,12 @@ export default function EnhancedDashboard() {
 
   // ← NEW: Helper to add a breach toast and auto-dismiss it after 8 seconds
   const addToast = useCallback((deviceId: string, roomId?: string, reason?: string) => {
-    setToastCounter((c) => {
+    setToastCounter((c: number) => {
       const id = c + 1;
-      setToasts((prev) => [...prev, { id, deviceId, roomId, reason }]);
+      setToasts((prev: Toast[]) => [...prev, { id, deviceId, roomId, reason }]);
       // ← NEW: Auto-remove toast after 8 seconds
       setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== id));
+        setToasts((prev: Toast[]) => prev.filter((t: Toast) => t.id !== id));
       }, 8000);
       return id;
     });
@@ -91,8 +91,8 @@ export default function EnhancedDashboard() {
       case "device_update": {
         // ← NEW: Update single device in-place without re-fetching all devices
         if (!d?.deviceId) break;
-        setDevices((prev) => {
-          const idx = prev.findIndex((dev) => dev.deviceId === d.deviceId);
+        setDevices((prev: Device[]) => {
+          const idx = prev.findIndex((dev: Device) => dev.deviceId === d.deviceId);
           const updated: Device = {
             ...(idx >= 0 ? prev[idx] : { deviceId: d.deviceId as string }),
             status: (d.status as string) ?? prev[idx]?.status,
@@ -121,15 +121,15 @@ export default function EnhancedDashboard() {
           acknowledged: false,
           message: d.message as string | undefined,
         };
-        setAlerts((prev) => [newAlert, ...prev].slice(0, 100));
+        setAlerts((prev: Alert[]) => [newAlert, ...prev].slice(0, 100));
 
         // ← NEW: Show red toast notification for breach events
         if (d.type === "breach") {
           addToast(d.deviceId as string, d.roomId as string | undefined, d.message as string | undefined);
 
           // ← NEW: Mark the device as breached instantly in the device grid
-          setDevices((prev) =>
-            prev.map((dev) =>
+          setDevices((prev: Device[]) =>
+            prev.map((dev: Device) =>
               dev.deviceId === d.deviceId ? { ...dev, status: "breach" } : dev
             )
           );
@@ -140,8 +140,8 @@ export default function EnhancedDashboard() {
       case "device_recovered": {
         // ← NEW: Clear breach state when device comes back online
         if (!d?.deviceId) break;
-        setDevices((prev) =>
-          prev.map((dev) =>
+        setDevices((prev: Device[]) =>
+          prev.map((dev: Device) =>
             dev.deviceId === d.deviceId ? { ...dev, status: "ok" } : dev
           )
         );
@@ -153,10 +153,10 @@ export default function EnhancedDashboard() {
         // ← NEW: Remove or mark offline the device that disconnected
         if (!d?.deviceId) break;
         if (type === "device_deleted") {
-          setDevices((prev) => prev.filter((dev) => dev.deviceId !== d.deviceId));
+          setDevices((prev: Device[]) => prev.filter((dev: Device) => dev.deviceId !== d.deviceId));
         } else {
-          setDevices((prev) =>
-            prev.map((dev) =>
+          setDevices((prev: Device[]) =>
+            prev.map((dev: Device) =>
               dev.deviceId === d.deviceId ? { ...dev, status: "offline" } : dev
             )
           );
@@ -217,7 +217,7 @@ export default function EnhancedDashboard() {
   }, []);
 
   // ── Derived lists ──────────────────────────────────────────────────────────
-  const filteredDevices = devices.filter((d) => {
+  const filteredDevices = devices.filter((d: Device) => {
     if (!d?.deviceId) return false;
     if (filter !== "all" && d.status !== filter) return false;
     if (
@@ -242,8 +242,8 @@ export default function EnhancedDashboard() {
           notes: "Acknowledged from dashboard",
         }),
       });
-      setAlerts((prev) =>
-        prev.map((a) => (a === alert ? { ...a, acknowledged: true } : a))
+      setAlerts((prev: Alert[]) =>
+        prev.map((a: Alert) => (a === alert ? { ...a, acknowledged: true } : a))
       );
     } catch (e) {
       console.error("Failed to acknowledge alert", e);
@@ -278,7 +278,7 @@ export default function EnhancedDashboard() {
     <main className="min-h-screen bg-gray-50 p-6">
       {/* ← NEW: Toast container — stacks in bottom-right, auto-dismisses */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-        {toasts.map((toast) => (
+        {toasts.map((toast: Toast) => (
           <div
             key={toast.id}
             className="bg-red-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-start gap-3 max-w-sm animate-bounce"
@@ -292,7 +292,7 @@ export default function EnhancedDashboard() {
             </div>
             {/* ← NEW: Manual dismiss button */}
             <button
-              onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+              onClick={() => setToasts((prev: Toast[]) => prev.filter((t: Toast) => t.id !== toast.id))}
               className="ml-auto text-white opacity-70 hover:opacity-100 text-lg leading-none"
             >
               ×
@@ -368,8 +368,8 @@ export default function EnhancedDashboard() {
               </div>
             )}
             {filteredDevices
-              .filter((d) => d?.deviceId)
-              .map((d) => (
+              .filter((d: Device) => d?.deviceId)
+              .map((d: Device) => (
                 <div
                   key={d.deviceId}
                   className={`bg-white rounded-lg shadow-md p-5 hover:shadow-lg transition-shadow ${
@@ -432,8 +432,8 @@ export default function EnhancedDashboard() {
                 </div>
               )}
               {alerts
-                .filter((a) => a?.type)
-                .map((a, i) => (
+                .filter((a: Alert) => a?.type)
+                .map((a: Alert, i: number) => (
                   <div
                     key={a.id ?? i}
                     className={`border-b p-4 hover:bg-gray-50 cursor-pointer ${
