@@ -14,6 +14,10 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         private const val TAG = "ScreenAndWiFiReceiver"
     }
 
+    // ← FIXED: Added flag to prevent duplicate breach alerts on rapid WiFi toggles
+    @Volatile
+    private var breachAlreadySent = false
+
     fun register(context: Context) {
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -49,9 +53,43 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
             }
             WifiManager.WIFI_STATE_CHANGED_ACTION -> {
                 val wifiState = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN)
-                if (wifiState == WifiManager.WIFI_STATE_DISABLED || wifiState == WifiManager.WIFI_STATE_DISABLING) {
-                    Log.e(TAG, "WiFi was DISABLED! Triggering instant breach.")
-                    WiFiMonitoringService.triggerBreachAlert("WiFi Disabled by User/System")
+
+                // ← FIXED: Handle each WiFi state separately with correct breach logic
+                when (wifiState) {
+                    WifiManager.WIFI_STATE_DISABLING -> {
+                        // ← FIXED: DISABLING fires before DISABLED — fastest possible detection
+                        if (!breachAlreadySent) {
+                            breachAlreadySent = true // ← FIXED: Set flag before sending to prevent race condition
+                            Log.e(TAG, "WiFi DISABLING detected — triggering INSTANT breach alert!")
+                            WiFiMonitoringService.triggerBreachAlert("WiFi Turned OFF (DISABLING state)")
+                        } else {
+                            Log.d(TAG, "WiFi DISABLING — breach already sent, skipping duplicate.")
+                        }
+                    }
+                    WifiManager.WIFI_STATE_DISABLED -> {
+                        // ← FIXED: Backup trigger in case DISABLING was missed (e.g., some OEM ROMs)
+                        if (!breachAlreadySent) {
+                            breachAlreadySent = true
+                            Log.e(TAG, "WiFi DISABLED detected — triggering backup breach alert!")
+                            WiFiMonitoringService.triggerBreachAlert("WiFi Turned OFF (DISABLED state)")
+                        } else {
+                            Log.d(TAG, "WiFi DISABLED — breach already sent, skipping duplicate.")
+                        }
+                    }
+                    WifiManager.WIFI_STATE_ENABLING -> {
+                        // ← FIXED: Do nothing while enabling — don't alert, just log
+                        Log.d(TAG, "WiFi ENABLING — waiting for connection, no action taken.")
+                    }
+                    WifiManager.WIFI_STATE_ENABLED -> {
+                        // ← FIXED: Reset flag when WiFi comes back ON, resume normal monitoring
+                        // Previously this was incorrectly triggering a breach alert
+                        Log.d(TAG, "WiFi ENABLED — resetting breach flag, resuming normal monitoring.")
+                        breachAlreadySent = false // ← FIXED: Reset so next WiFi-OFF triggers correctly
+                        WiFiMonitoringService.setMonitoringInterval(2000L, "WiFi Re-enabled")
+                    }
+                    else -> {
+                        Log.d(TAG, "WiFi state UNKNOWN ($wifiState) — ignoring.")
+                    }
                 }
             }
             ConnectivityManager.CONNECTIVITY_ACTION -> {
