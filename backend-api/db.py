@@ -3,16 +3,14 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from enum import Enum
-import os
 from config import settings
-print("MONGODB_URL USED BY FASTAPI:", settings.mongodb_url)
 
-# MongoDB Atlas connection
-MONGODB_URL = os.getenv(
-    "MONGODB_URL",
-    "mongodb+srv://hotel_security:65JdbW2Xazplojmg@cluster0.7q1xysy.mongodb.net/?retryWrites=true&w=majority"
-)
-DATABASE_NAME = os.getenv("DATABASE_NAME", "hotel_security")
+# Single source of truth: reads MONGODB_URL from env var via config.py
+# Set MONGODB_URL in Render dashboard > Environment Variables
+MONGODB_URL = settings.mongodb_url
+DATABASE_NAME = settings.database_name
+
+print("MONGODB_URL USED BY FASTAPI:", MONGODB_URL)
 
 # Optimized MongoDB client with connection pooling
 client = AsyncIOMotorClient(
