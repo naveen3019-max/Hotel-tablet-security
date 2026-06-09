@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, Body, WebSocket, WebSocketDisconnect  # ← NEW: Added WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
-import pytz
+import pytz  # type: ignore
 from db import (
     db, devices_collection, alerts_collection, rooms_collection,
     StatusEnum, init_db
@@ -31,26 +32,74 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Force unbuffered output for Render
-sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global redis_client, monitoring_task
+    
+    print("="*60, flush=True)
+    print("🚀 BACKEND STARTUP", flush=True)
+    print(f"   Environment: {settings.app_env}", flush=True)
+    print(f"   Debug: {settings.debug}", flush=True)
+    print(f"   MongoDB: {settings.mongodb_url}", flush=True)
+    print("="*60, flush=True)
+    
+    # Initialize MongoDB indexes
+    await init_db()
+    print("✅ MongoDB indexes created successfully", flush=True)
+    
+    # Initialize Redis for SSE
+    try:
+        redis_instance = await redis.from_url(settings.redis_url)
+        await redis_instance.ping()
+        redis_client = redis_instance
+        logger.info("Redis connected for SSE")
+        print("✅ Redis connected for SSE", flush=True)
+    except Exception as e:
+        redis_client = None
+        logger.warning(f"Redis connection failed: {e}. SSE will work without Redis.")
+        print(f"⚠️ Redis connection failed: {e}", flush=True)
+    
+    # Start background heartbeat monitoring
+    monitoring_task = asyncio.create_task(monitor_device_heartbeats())
+    logger.info("🚀 Background heartbeat monitoring started")
+    print("✅ Heartbeat monitoring task started", flush=True)
+    print("="*60, flush=True)
+    print("📡 READY TO ACCEPT CONNECTIONS", flush=True)
+    print("="*60, flush=True)
+    
+    yield
+    
+    if redis_client:
+        await redis_client.close()
+    
+    # Cancel monitoring task
+    if monitoring_task:
+        monitoring_task.cancel()
+        try:
+            await monitoring_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Heartbeat monitoring stopped")
 
 app = FastAPI(
     title="Hotel Tablet Security API",
     version="0.6.0",
     debug=settings.debug,
     docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None
+    redoc_url="/redoc" if settings.debug else None,
+    lifespan=lifespan
 )
 
 # Configure CORS
-cors_origins = (
-    settings.cors_origins.split(",")
-    if settings.cors_origins != "*"
-    else ["*"]
-)       
+# ← FIXED: Root Cause 4: CORS allows WebSocket origins with wildcard
+cors_origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=True,
+    allow_credentials=False, # Must be False when origins is ["*"]
     allow_methods=["*"],
     allow_headers=["*"],
     max_age=3600
@@ -59,10 +108,8 @@ app.add_middleware(
 # Helper function for Indian Standard Time
 def get_ist_time():
     """Get current time in Indian Standard Time (properly converted from UTC)"""
-    # Get current UTC time (Render servers use UTC)
-    utc_now = datetime.utcnow()
-    # Make it timezone-aware (UTC)
-    utc_now = pytz.utc.localize(utc_now)
+    # Get current UTC time (timezone aware)
+    utc_now = datetime.now(pytz.utc)
     # Convert to IST (UTC+5:30)
     ist = pytz.timezone('Asia/Kolkata')
     return utc_now.astimezone(ist)
@@ -185,54 +232,7 @@ async def monitor_device_heartbeats():
             logger.error(f"Error in heartbeat monitoring: {e}")
             await asyncio.sleep(5)  # Continue monitoring even if error occurs
 
-@app.on_event("startup")
-async def on_startup():
-    global redis_client, monitoring_task
-    
-    print("="*60, flush=True)
-    print("🚀 BACKEND STARTUP", flush=True)
-    print(f"   Environment: {settings.app_env}", flush=True)
-    print(f"   Debug: {settings.debug}", flush=True)
-    print(f"   MongoDB: {settings.mongodb_url}", flush=True)
-    print("="*60, flush=True)
-    
-    # Initialize MongoDB indexes
-    await init_db()
-    print("✅ MongoDB indexes created successfully", flush=True)
-    
-    # Initialize Redis for SSE
-    try:
-        redis_instance = await redis.from_url(settings.redis_url)
-        await redis_instance.ping()
-        redis_client = redis_instance
-        logger.info("Redis connected for SSE")
-        print("✅ Redis connected for SSE", flush=True)
-    except Exception as e:
-        redis_client = None
-        logger.warning(f"Redis connection failed: {e}. SSE will work without Redis.")
-        print(f"⚠️ Redis connection failed: {e}", flush=True)
-    
-    # Start background heartbeat monitoring
-    monitoring_task = asyncio.create_task(monitor_device_heartbeats())
-    logger.info("🚀 Background heartbeat monitoring started")
-    print("✅ Heartbeat monitoring task started", flush=True)
-    print("="*60, flush=True)
-    print("📡 READY TO ACCEPT CONNECTIONS", flush=True)
-    print("="*60, flush=True)
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    if redis_client:
-        await redis_client.close()
-    
-    # Cancel monitoring task
-    if monitoring_task:
-        monitoring_task.cancel()
-        try:
-            await monitoring_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Heartbeat monitoring stopped")
+# Startup and shutdown handled by lifespan context manager above
 
 # Request Models
 class Breach(BaseModel):

@@ -35,8 +35,8 @@ export function useWebSocket(url: string): UseWebSocketReturn {
 
   // ← NEW: Derived ws:// or wss:// URL from the http/https backend URL
   const getWsUrl = useCallback((httpUrl: string): string => {
-    // Replace http:// with ws:// and https:// with wss://
-    return httpUrl.replace(/^http/, "ws") + "/ws/dashboard";
+    // ← FIXED: Root Cause 5: Explicitly replace http:// with ws:// and https:// with wss:// for production
+    return httpUrl.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://") + "/ws/dashboard";
   }, []);
 
   const connect = useCallback(() => {
