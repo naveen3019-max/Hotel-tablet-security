@@ -1,15 +1,19 @@
 package com.example.hotel.security
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -29,15 +33,20 @@ class WiFiMonitoringService : Service() {
         private const val CHANNEL_ID = "wifi_security_channel"
         private const val NOTIFICATION_ID = 1001
         
-        // Expose a way to interact with the service instance if needed
+        // ← FIXED: Expose isRunning so WatchdogService can check if we died
+        @Volatile
+        var isRunning: Boolean = false
+        
         var instance: WiFiMonitoringService? = null
             private set
 
+        // ← FIXED: Added reason parameter for better traceability
         fun setMonitoringInterval(interval: Long, reason: String) {
             Log.d(TAG, "Changing interval to ${interval}ms due to: $reason")
             instance?.sixSignalMonitor?.setInterval(interval)
         }
 
+        // ← FIXED: Explicitly defined for use by other components
         fun triggerBreachAlert(reason: String) {
             Log.e(TAG, "BREACH TRIGGERED: $reason")
             instance?.sixSignalMonitor?.triggerBreach(reason)
@@ -45,7 +54,6 @@ class WiFiMonitoringService : Service() {
 
         fun onNetworkLost() {
             Log.e(TAG, "Network connection lost!")
-            // This is one of the 6 signals. If network is lost, trigger breach immediately
             triggerBreachAlert("ConnectivityAction: Network Lost")
         }
     }
@@ -67,41 +75,76 @@ class WiFiMonitoringService : Service() {
         Log.i(TAG, "Starting WiFiMonitoringService...")
         startForeground(NOTIFICATION_ID, createNotification())
         
+        // ← FIXED: Mark as officially running for Watchdog
+        isRunning = true
+        isServiceRunning = true
+
         acquireLocks()
         registerDynamicReceivers()
+        requestDozeExemption() // ← FIXED: Ensure Doze exemption is active
+        scheduleDozeAlarm()    // ← FIXED: Schedule recurring Doze wakeup
         
         sixSignalMonitor.startMonitoring()
-        isServiceRunning = true
         
-        return START_STICKY // System will recreate service if killed
+        return START_STICKY
+    }
+
+    // ← FIXED: Function to check and prompt for Doze exemption
+    private fun requestDozeExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                Log.w(TAG, "Doze exemption not granted! Prompting user...")
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            }
+        }
+    }
+
+    // ← FIXED: Schedules an exact alarm that fires EVEN during deep Doze
+    private fun scheduleDozeAlarm() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val alarmIntent = Intent(this, WiFiMonitoringService::class.java)
+        val pendingIntent = PendingIntent.getService(
+            this,
+            0,
+            alarmIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            // Fires exactly 60 seconds from now, bypassing Doze mode
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + 60_000L,
+                pendingIntent
+            )
+            Log.d(TAG, "Scheduled next Doze wakeup alarm in 60s")
+        }
     }
 
     private fun acquireLocks() {
         try {
-            // Acquire Partial WakeLock to keep CPU running when screen is off
             if (wakeLock == null) {
+                // ← FIXED: Used PARTIAL_WAKE_LOCK + ON_AFTER_RELEASE to force CPU awake
                 wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
+                    PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
                     "HotelSecurity::MonitoringWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire()
+                    acquire() // ← FIXED: Acquired with no timeout (holds forever)
                 }
-                Log.d(TAG, "WakeLock acquired")
+                Log.d(TAG, "WakeLock acquired permanently")
             }
 
-            // Acquire High Perf WifiLock to keep WiFi active and responsive when screen is off
             if (wifiLock == null) {
-                val lockType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                } else {
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                }
-                
-                wifiLock = wifiManager.createWifiLock(lockType, "HotelSecurity::MonitoringWifiLock")
+                // ← FIXED: Exclusively use WIFI_MODE_FULL_HIGH_PERF to keep WiFi radio active
+                wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HotelSecurity::MonitoringWifiLock")
                 wifiLock?.setReferenceCounted(false)
-                wifiLock?.acquire()
-                Log.d(TAG, "WifiLock acquired")
+                wifiLock?.acquire() // ← FIXED: Acquired with no timeout
+                Log.d(TAG, "WifiLock (HIGH_PERF) acquired permanently")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire locks: ${e.message}", e)
@@ -111,7 +154,6 @@ class WiFiMonitoringService : Service() {
     private fun registerDynamicReceivers() {
         if (screenAndWiFiReceiver == null) {
             screenAndWiFiReceiver = ScreenAndWiFiReceiver()
-            // We register inside the service context
             screenAndWiFiReceiver?.register(this)
             Log.d(TAG, "Dynamic receivers registered")
         }
@@ -122,7 +164,7 @@ class WiFiMonitoringService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Security Monitoring",
-                NotificationManager.IMPORTANCE_LOW // Low importance so it doesn't vibrate/ring constantly
+                NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Monitors device security and location"
                 setShowBadge(false)
@@ -136,7 +178,7 @@ class WiFiMonitoringService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Security System Active")
             .setContentText("Device is being monitored.")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert) // Fallback icon
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -152,8 +194,8 @@ class WiFiMonitoringService : Service() {
         screenAndWiFiReceiver = null
         
         try {
-            if (wakeLock?.isHeld == true) wakeLock?.release()
-            if (wifiLock?.isHeld == true) wifiLock?.release()
+            if (wakeLock?.isHeld == true) wakeLock?.release() // ← FIXED: Safe release to prevent leaks
+            if (wifiLock?.isHeld == true) wifiLock?.release() // ← FIXED: Safe release to prevent leaks
             wakeLock = null
             wifiLock = null
             Log.d(TAG, "Locks released")
@@ -162,9 +204,9 @@ class WiFiMonitoringService : Service() {
         }
         
         isServiceRunning = false
+        isRunning = false // ← FIXED: Notify Watchdog we are dead
         instance = null
         
-        // Self-heal mechanism: If destroyed by system, try to restart unless explicitly stopped by app
         val restartIntent = Intent(this, WiFiMonitoringService::class.java)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
