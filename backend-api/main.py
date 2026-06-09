@@ -432,6 +432,8 @@ async def alert_breach(b: Breach, device=Depends(get_current_device)):
         "rssi": b.rssi
     })
     
+    # ← FIXED: Added a print() statement for debugging breach broadcasting
+    print(f"🚨 BROADCASTING BREACH: {b.deviceId}", flush=True)
     await broadcast_event("alert", {
         "type": "breach",
         "deviceId": b.deviceId,
@@ -1041,7 +1043,7 @@ async def websocket_dashboard(websocket: WebSocket):
         # (We don't expect any, but we must await to avoid closing immediately)
         while True:
             data = await websocket.receive_text()
-            # ← NEW: Echo-back ping/pong to keep the connection alive through proxies
+            # ← FIXED: The /ws/dashboard endpoint must handle ping and echo back pong to keep connection alive
             if data == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
 

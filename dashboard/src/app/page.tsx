@@ -175,6 +175,26 @@ export default function EnhancedDashboard() {
   }, [lastMessage, addToast]);
 
   // ── Initial data load + polling fallback ──────────────────────────────────
+  // ← FIXED: New useEffect to call /api/devices every 10 minutes to prevent Render free tier from sleeping
+  useEffect(() => {
+    if (!API) return;
+
+    const keepAlive = async () => {
+      try {
+        const res = await fetch(`${API}/api/devices`);
+        if (res.ok) {
+          console.log("Keep-alive ping sent");
+        }
+      } catch (err) {
+        console.warn("Keep-alive ping failed:", err);
+      }
+    };
+
+    // Every 10 minutes (600,000 ms)
+    const interval = setInterval(keepAlive, 600000);
+    return () => clearInterval(interval);
+  }, []);
+
   // ← NEW: Fetch initial data once on mount so the dashboard isn't blank
   useEffect(() => {
     if (!API) {
