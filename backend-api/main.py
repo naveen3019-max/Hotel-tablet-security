@@ -432,13 +432,14 @@ async def alert_breach(b: Breach, device=Depends(get_current_device)):
         "rssi": b.rssi
     })
     
-    # ← FIXED: Added a print() statement for debugging breach broadcasting
-    print(f"🚨 BROADCASTING BREACH: {b.deviceId}", flush=True)
+    # ← FIXED: Added debug print BEFORE broadcast as requested
+    print(f"🚨 BREACH → broadcasting to WebSocket clients", flush=True)
     await broadcast_event("alert", {
         "type": "breach",
         "deviceId": b.deviceId,
         "roomId": b.roomId,
-        "rssi": b.rssi
+        "rssi": b.rssi,
+        "message": "WiFi breach detected" # ← FIXED: added message field
     })
     
     # Queue notification task
