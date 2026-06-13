@@ -1,46 +1,32 @@
-// NEW FILE: dashboard/src/components/LiveIndicator.tsx
-// Visual badge showing the live WebSocket connection status.
-// Green pulsing dot = connected, yellow = reconnecting, red = disconnected.
-
-import React from "react"; // ← NEW: React import for JSX
-import type { ConnectionStatus } from "../hooks/useWebSocket"; // ← NEW: Shared type
+import React from 'react';
 
 interface LiveIndicatorProps {
-  status: ConnectionStatus; // ← NEW: Driven by useWebSocket hook
+  status: 'connected' | 'connecting' | 'disconnected';
 }
 
 export default function LiveIndicator({ status }: LiveIndicatorProps) {
-  // ← NEW: Map each status to its colour class and label text
-  const config: Record<
-    ConnectionStatus,
-    { dot: string; label: string; text: string }
-  > = {
-    connected: {
-      dot: "bg-green-500 animate-pulse",     // ← NEW: Pulsing green = fully live
-      label: "text-green-700",
-      text: "LIVE",
-    },
-    connecting: {
-      dot: "bg-yellow-400 animate-pulse",    // ← NEW: Pulsing yellow = trying to reconnect
-      label: "text-yellow-700",
-      text: "Reconnecting...",
-    },
-    disconnected: {
-      dot: "bg-red-500",                     // ← NEW: Solid red = no connection
-      label: "text-red-700",
-      text: "Disconnected",
-    },
-  };
-
-  const { dot, label, text } = config[status];
+  if (status === 'connected') {
+    return (
+      <div className="flex items-center text-green-500 font-bold ml-4">
+        <span className="w-3 h-3 bg-green-500 rounded-full mr-2 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.8)]"></span>
+        LIVE
+      </div>
+    );
+  }
+  
+  if (status === 'connecting') {
+    return (
+      <div className="flex items-center text-yellow-500 font-bold ml-4">
+        <span className="w-3 h-3 bg-yellow-500 rounded-full mr-2"></span>
+        RECONNECTING
+      </div>
+    );
+  }
 
   return (
-    // ← NEW: Positioned top-right via parent flex layout in enhanced-page.tsx
-    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white shadow border border-gray-200">
-      {/* ← NEW: The coloured dot */}
-      <span className={`w-2.5 h-2.5 rounded-full ${dot}`} />
-      {/* ← NEW: Status label */}
-      <span className={`text-xs font-semibold ${label}`}>{text}</span>
+    <div className="flex items-center text-red-500 font-bold ml-4">
+      <span className="w-3 h-3 bg-red-500 rounded-full mr-2"></span>
+      POLLING MODE
     </div>
   );
 }

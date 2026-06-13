@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import LiveIndicator from '@/components/LiveIndicator';
 
 interface Alert {
   id: string;
@@ -13,8 +14,11 @@ interface Alert {
 
 export default function DashboardPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const { status, lastMessage } = useWebSocket('wss://hotel-tablet-security.onrender.com/ws/dashboard');
   const lastFetchTimeRef = useRef<number>(Date.now());
+
+  const { status, lastMessage, isLikelySilentDisconnect } = useWebSocket(
+    process.env.NEXT_PUBLIC_API_URL?.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws/dashboard'
+  );
 
   useEffect(() => {
     if (lastMessage && lastMessage.type === 'breach') {
@@ -31,7 +35,8 @@ export default function DashboardPage() {
     const pollAlerts = async () => {
       try {
         const timeSinceLastWsMessage = Date.now() - lastFetchTimeRef.current;
-        if (status === 'connected' && timeSinceLastWsMessage < 20000) {
+        
+        if (status === 'connected' && !isLikelySilentDisconnect && timeSinceLastWsMessage < 20000) {
           return;
         }
 
@@ -53,15 +58,15 @@ export default function DashboardPage() {
     };
 
     const interval = setInterval(pollAlerts, 15000);
-    pollAlerts();
+    pollAlerts(); 
 
     return () => clearInterval(interval);
-  }, [status]);
+  }, [status, isLikelySilentDisconnect]);
 
-  const getDataSourceIndicator = () => {
-    if (status === 'connected') return <span className="text-green-500 font-bold ml-4">● LIVE</span>;
-    if (status === 'connecting') return <span className="text-yellow-500 font-bold ml-4">● CONNECTING...</span>;
-    return <span className="text-orange-500 font-bold ml-4">● POLLING (FALLBACK)</span>;
+  const getConnectionState = () => {
+    if (status === 'connected' && !isLikelySilentDisconnect) return 'connected';
+    if (status === 'connecting') return 'connecting';
+    return 'disconnected';
   };
 
   return (
@@ -70,7 +75,7 @@ export default function DashboardPage() {
         <h1 className="text-3xl font-bold">Security Dashboard</h1>
         <div className="flex items-center">
           <span className="text-gray-500 text-sm mr-2">Status:</span>
-          {getDataSourceIndicator()}
+          <LiveIndicator status={getConnectionState()} />
         </div>
       </div>
 
@@ -91,7 +96,7 @@ export default function DashboardPage() {
               </tr>
             ) : (
               alerts.map((alert) => (
-                <tr key={alert.id} className={alert.status === 'breach' ? 'bg-red-50' : ''}>
+                <tr key={alert.id} className={alert.status === 'breach' ? 'bg-red-50 animate-pulse' : ''}>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {new Date(alert.timestamp).toLocaleTimeString()}
                   </td>
@@ -100,9 +105,9 @@ export default function DashboardPage() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                      alert.status === 'breach' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                      alert.status === 'breach' ? 'bg-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.7)]' : 'bg-green-100 text-green-800'
                     }`}>
-                      {alert.status.toUpperCase()}
+                      {alert.status === 'breach' ? '🔴 BREACH' : '🟢 SECURE'}
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">

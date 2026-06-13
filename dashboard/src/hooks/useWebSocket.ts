@@ -5,10 +5,13 @@ type ConnectionStatus = 'connected' | 'disconnected' | 'connecting';
 export function useWebSocket(url: string) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [lastMessage, setLastMessage] = useState<any>(null);
+  const [isLikelySilentDisconnect, setIsLikelySilentDisconnect] = useState<boolean>(false);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout>();
   const lastMessageTime = useRef<number>(Date.now());
   const healthCheckIntervalRef = useRef<NodeJS.Timeout>();
+  const reconnectAttempts = useRef<number>(0);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -18,8 +21,10 @@ export function useWebSocket(url: string) {
 
     ws.onopen = () => {
       setStatus('connected');
+      setIsLikelySilentDisconnect(false);
+      reconnectAttempts.current = 0;
       lastMessageTime.current = Date.now();
-      console.log('WebSocket connected');
+      console.log('[WS] Connected to dashboard stream');
       
       if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
       reconnectTimerRef.current = setInterval(() => {
@@ -31,11 +36,10 @@ export function useWebSocket(url: string) {
 
     ws.onmessage = (event) => {
       lastMessageTime.current = Date.now();
+      setIsLikelySilentDisconnect(false);
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'pong') {
-          return;
-        }
+        if (data.type === 'pong') return;
         setLastMessage(data);
       } catch (e) {
         console.error('WebSocket parse error:', e);
@@ -45,6 +49,10 @@ export function useWebSocket(url: string) {
     ws.onclose = () => {
       setStatus('disconnected');
       if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
+      
+      const timeout = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+      reconnectAttempts.current += 1;
+      setTimeout(() => connect(), timeout);
     };
 
     ws.onerror = (error) => {
@@ -55,26 +63,15 @@ export function useWebSocket(url: string) {
     wsRef.current = ws;
   }, [url]);
 
-  const forceReconnect = useCallback(() => {
-    console.log('🔄 Force reconnecting...');
-    setStatus('disconnected');
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setTimeout(() => {
-      connect();
-    }, 1000);
-  }, [connect]);
-
   useEffect(() => {
     connect();
 
     healthCheckIntervalRef.current = setInterval(() => {
-      const timeSinceLastMessage = Date.now() - lastMessageTime.current;
-      if (timeSinceLastMessage > 60000) {
-        console.warn('Silent disconnect detected! No message in 60s.');
-        forceReconnect();
+      const silent = Date.now() - lastMessageTime.current;
+      if (silent > 45000 && wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log("🔄 Silent disconnect! Force reconnecting...");
+        setIsLikelySilentDisconnect(true);
+        wsRef.current.close();
       }
     }, 5000);
 
@@ -83,7 +80,7 @@ export function useWebSocket(url: string) {
       if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
       if (healthCheckIntervalRef.current) clearInterval(healthCheckIntervalRef.current);
     };
-  }, [connect, forceReconnect]);
+  }, [connect]);
 
-  return { status, lastMessage };
+  return { status, lastMessage, isLikelySilentDisconnect };
 }

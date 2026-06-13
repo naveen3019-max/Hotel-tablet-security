@@ -135,13 +135,21 @@
             android:name=".security.WiFiMonitoringService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="location">
+            <intent-filter>
+                <action android:name="DOZE_ALARM" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".security.WatchdogService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice">
+            <intent-filter>
+                <action android:name="WATCHDOG_ALARM" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name=".security.BootReceiver"
