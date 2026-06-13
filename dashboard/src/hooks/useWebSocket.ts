@@ -33,35 +33,49 @@ export function useWebSocket(url: string) {
 
       ws.onopen = () => {
         if (!isMounted) return;
+        lastMessageTime.current = Date.now(); // ← FIXED: Reset on connect
         setStatus('connected');
         setIsPollingMode(false); 
         reconnectAttempts.current = 0;
-        lastMessageTime.current = Date.now();
-        console.log('⚡ God Mode: WebSocket Linked');
+        console.log("✅ [WS] Connected to hotel security"); // ← FIXED: Added connection logging
         
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
         pingTimerRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ping' })); 
+            ws.send("ping"); // ← FIXED: Send plain string ping instead of JSON
           }
-        }, 15000); 
+        }, 20000); // ← FIXED: Ping every 20 seconds
       };
 
       ws.onmessage = (event) => {
         if (!isMounted) return;
-        lastMessageTime.current = Date.now();
-        setIsPollingMode(false);
         try {
-          const data = JSON.parse(event.data) as WebSocketMessage;
-          if (data.type === 'pong') return;
-          setLastMessage(data); 
+          const msg = JSON.parse(event.data) as WebSocketMessage;
+          
+          // ← FIXED: ignore pong — just update time
+          if (msg.type === 'pong' || msg.type === 'connected') {
+            lastMessageTime.current = Date.now();
+            return; // Don't pass to UI
+          }
+          
+          // Real message → update UI
+          lastMessageTime.current = Date.now();
+          setIsPollingMode(false);
+          setLastMessage(msg);
+          
         } catch (e) {
+          // Handle plain text responses
+          if (event.data === 'pong') {
+              lastMessageTime.current = Date.now();
+              return;
+          }
           console.error('WS Parse Error:', e);
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (!isMounted) return;
+        console.log(`🔴 [WS] Closed. Code: ${event.code}`); // ← FIXED: Added close logging
         setStatus('disconnected');
         setIsPollingMode(true); 
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
@@ -73,7 +87,11 @@ export function useWebSocket(url: string) {
         }, timeout);
       };
 
-      ws.onerror = () => ws.close();
+      ws.onerror = () => {
+        console.log("❌ [WS] Error — closing"); // ← FIXED: Added error logging
+        ws.close();
+      };
+      
       wsRef.current = ws;
     }
 
@@ -82,7 +100,7 @@ export function useWebSocket(url: string) {
     healthCheckRef.current = setInterval(() => {
       if (!isMounted) return;
       const silent = Date.now() - lastMessageTime.current;
-      if (silent > 45000 && wsRef.current?.readyState === WebSocket.OPEN) {
+      if (silent > 60000 && wsRef.current?.readyState === WebSocket.OPEN) { // ← FIXED: 60 seconds threshold
         console.log("💀 God Mode: Silent drop detected. Nuking connection...");
         setIsPollingMode(true);
         wsRef.current.close();
