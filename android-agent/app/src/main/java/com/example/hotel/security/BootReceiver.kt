@@ -4,32 +4,27 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
 class BootReceiver : BroadcastReceiver() {
-    private val TAG = "BootReceiver"
-
     override fun onReceive(context: Context, intent: Intent) {
-        Log.i(TAG, "Broadcast received: ${intent.action}")
-        
-        val isBootAction = intent.action == Intent.ACTION_BOOT_COMPLETED ||
-                           intent.action == "android.intent.action.QUICKBOOT_POWERON" ||
-                           intent.action == "com.htc.intent.action.QUICKBOOT_POWERON" ||
-                           intent.action == "com.lenovo.sleepmode.BOOT_COMPLETED" ||
-                           intent.action == Intent.ACTION_MY_PACKAGE_REPLACED
+        val action = intent.action
+        Log.i("BootReceiver", "God Mode: Boot intercept: $action")
 
-        if (isBootAction) {
-            Log.i(TAG, "Boot or package update detected. Starting core services.")
-            val monitorIntent = Intent(context, WiFiMonitoringService::class.java)
+        Handler(Looper.getMainLooper()).postDelayed({
+            val serviceIntent = Intent(context, WiFiMonitoringService::class.java)
             val watchdogIntent = Intent(context, WatchdogService::class.java)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(monitorIntent)
+                context.startForegroundService(serviceIntent)
                 context.startForegroundService(watchdogIntent)
             } else {
-                context.startService(monitorIntent)
+                context.startService(serviceIntent)
                 context.startService(watchdogIntent)
             }
-        }
+            Log.i("BootReceiver", "God Mode: All systems online post-boot")
+        }, 3000)
     }
 }

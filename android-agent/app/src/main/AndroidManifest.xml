@@ -88,7 +88,8 @@
             android:name=".service.KioskService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="connectedDevice|location"
+            android:stopWithTask="false" />
 
         <receiver
             android:name=".admin.HotelDeviceAdminReceiver"
@@ -135,7 +136,8 @@
             android:name=".security.WiFiMonitoringService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="location">
+            android:foregroundServiceType="connectedDevice|location"
+            android:stopWithTask="false">
             <intent-filter>
                 <action android:name="DOZE_ALARM" />
             </intent-filter>
@@ -145,7 +147,8 @@
             android:name=".security.WatchdogService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice">
+            android:foregroundServiceType="connectedDevice"
+            android:stopWithTask="false">
             <intent-filter>
                 <action android:name="WATCHDOG_ALARM" />
             </intent-filter>
@@ -168,6 +171,11 @@
                   android:enabled="true"
                   android:exported="false" />
 
+            <receiver
+            android:name=".security.DozeAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 
+    <uses-permission android:name="android.permission.RESTART_PACKAGES" />
 </manifest>

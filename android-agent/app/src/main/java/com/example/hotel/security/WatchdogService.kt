@@ -16,7 +16,7 @@ class WatchdogService : Service() {
 
     companion object {
         private const val TAG = "WatchdogService"
-        private const val WATCHDOG_INTERVAL_MS = 15_000L 
+        private const val WATCHDOG_INTERVAL_MS = 10_000L 
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -39,7 +39,7 @@ class WatchdogService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "WATCHDOG_ALARM") {
+        if (intent?.action == "WATCHDOG_ALARM") { 
             scheduleWatchdogAlarm()
         }
         handler.removeCallbacks(watchdogRunnable)
@@ -48,41 +48,41 @@ class WatchdogService : Service() {
     }
 
     private fun checkAndRestartMonitoringService() {
-        if (!WiFiMonitoringService.isRunning) {
-            Log.e(TAG, "Monitoring service completely dead! Restarting immediately...")
-            val restartIntent = Intent(this, WiFiMonitoringService::class.java)
-            val manufacturer = Build.MANUFACTURER.lowercase()
-            
-            if (manufacturer.contains("samsung")) {
-                restartIntent.setPackage(packageName)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(restartIntent)
-            } else {
-                startService(restartIntent)
-            }
-            if (manufacturer.contains("lenovo")) {
-                sendBroadcast(Intent("com.example.hotel.security.RESTART_MONITORING"))
-            }
+        if (!WiFiMonitoringService.isRunning || WiFiMonitoringService.instance?.sixSignalMonitor?.isMonitoringAlive() != true) {
+            Log.e(TAG, "God Mode: Primary monitor dead or frozen! Executing full restart sequence.")
+            restartEverything()
+        }
+    }
+
+    private fun restartEverything() {
+        stopService(Intent(this, WiFiMonitoringService::class.java))
+        Thread.sleep(500) 
+        
+        val restartIntent = Intent(this, WiFiMonitoringService::class.java)
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        
+        if (manufacturer.contains("samsung")) restartIntent.setPackage(packageName)
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(restartIntent)
+        } else {
+            startService(restartIntent)
+        }
+        
+        if (manufacturer.contains("lenovo")) {
+            sendBroadcast(Intent("com.example.hotel.security.RESTART_MONITORING")) 
         }
     }
 
     private fun scheduleWatchdogAlarm() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val alarmIntent = Intent(this, WatchdogService::class.java).apply {
-            action = "WATCHDOG_ALARM"
-        }
-        val pendingIntent = PendingIntent.getService(
-            this,
-            1,
-            alarmIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val alarmIntent = Intent(this, WatchdogService::class.java).apply { action = "WATCHDOG_ALARM" }
+        val pendingIntent = PendingIntent.getService(this, 2, alarmIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
+            alarmManager.setExactAndAllowWhileIdle( 
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 120_000L,
+                SystemClock.elapsedRealtime() + 90_000L,
                 pendingIntent
             )
         }

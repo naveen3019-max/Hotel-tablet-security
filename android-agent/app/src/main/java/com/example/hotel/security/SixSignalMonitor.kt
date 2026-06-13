@@ -1,6 +1,7 @@
 package com.example.hotel.security
 
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -13,7 +14,7 @@ class SixSignalMonitor(private val context: Context) {
 
     companion object {
         private const val TAG = "SixSignalMonitor"
-        private const val CHECK_INTERVAL = 3000L
+        private const val CHECK_INTERVAL = 15_000L 
     }
 
     private val monitorRunnable = object : Runnable {
@@ -21,17 +22,17 @@ class SixSignalMonitor(private val context: Context) {
             try {
                 val now = SystemClock.elapsedRealtime()
                 
-                if (lastCheckTime > 0 && (now - lastCheckTime) > 30000L) {
-                    Log.w(TAG, "Monitoring was paused by Doze! Gap: ${now - lastCheckTime}ms")
+                if (lastCheckTime > 0 && (now - lastCheckTime) > 20000L) {
+                    Log.w(TAG, "God Mode: Monitoring was paused by Doze! Gap: ${now - lastCheckTime}ms") 
                 }
                 
                 lastCheckTime = now
                 performSecurityCheck()
             } catch (e: Exception) {
-                Log.e(TAG, "Error in monitoring loop", e)
+                Log.e(TAG, "Error in God Mode monitoring loop", e)
             } finally {
                 if (isRunning) {
-                    handler.postDelayed(this, CHECK_INTERVAL)
+                    handler.postDelayed(this, CHECK_INTERVAL) 
                 }
             }
         }
@@ -42,31 +43,46 @@ class SixSignalMonitor(private val context: Context) {
             isRunning = true
             lastCheckTime = SystemClock.elapsedRealtime()
             handler.post(monitorRunnable)
-            Log.i(TAG, "SixSignalMonitor started")
+            Log.i(TAG, "God Mode: SixSignalMonitor started")
         }
     }
 
     fun stopMonitoring() {
         isRunning = false
         handler.removeCallbacks(monitorRunnable)
-        Log.i(TAG, "SixSignalMonitor stopped")
+        Log.i(TAG, "God Mode: SixSignalMonitor stopped")
+    }
+
+    fun forceImmediateCheck() {
+        handler.removeCallbacks(monitorRunnable)
+        handler.post(monitorRunnable) 
     }
 
     fun isMonitoringAlive(): Boolean {
         if (!isRunning) return false
         val timeSinceLastCheck = SystemClock.elapsedRealtime() - lastCheckTime
-        return timeSinceLastCheck < 10000L
-    }
-
-    fun setInterval(interval: Long) {
-        // Handle interval change if needed
+        return timeSinceLastCheck < 30_000L 
     }
 
     fun triggerBreach(reason: String) {
-        // Implementation for trigger breach
+        // Assume existing backend alert logic via API call
     }
 
     private fun performSecurityCheck() {
-        // Implementation for security check
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        var failScore = 0
+
+        if (!wifiManager.isWifiEnabled) failScore++
+        
+        val info = wifiManager.connectionInfo
+        if (info == null || info.networkId == -1) failScore++
+
+        if (failScore >= 3) {
+            WiFiMonitoringService.triggerBreachAlert("Score $failScore/6 failed")
+        } else if (failScore > 0) {
+            Log.w(TAG, "God Mode: Warning - $failScore signals degraded, not breaching yet.")
+        } else {
+            WiFiMonitoringService.lastBreachTime = 0L 
+        }
     }
 }

@@ -19,7 +19,9 @@ import androidx.core.app.NotificationCompat
 class WiFiMonitoringService : Service() {
 
     private lateinit var powerManager: PowerManager
+    private lateinit var wifiManager: WifiManager
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val sixSignalMonitor = SixSignalMonitor(this)
     private var isServiceRunning = false
 
@@ -28,25 +30,28 @@ class WiFiMonitoringService : Service() {
         private const val CHANNEL_ID = "wifi_security_channel"
         private const val NOTIFICATION_ID = 1001
         
-        @Volatile
-        var isRunning: Boolean = false
+        @Volatile var isRunning: Boolean = false
+        var lastBreachTime = 0L 
+        const val BREACH_COOLDOWN = 15_000L 
         
         var instance: WiFiMonitoringService? = null
             private set
 
-        fun setMonitoringInterval(interval: Long, reason: String) {
-            Log.d(TAG, "Changing interval to ${interval}ms due to: $reason")
-            instance?.sixSignalMonitor?.setInterval(interval)
-        }
-
         fun triggerBreachAlert(reason: String) {
-            Log.e(TAG, "BREACH TRIGGERED: $reason")
-            instance?.sixSignalMonitor?.triggerBreach(reason)
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastBreachTime > BREACH_COOLDOWN) {
+                lastBreachTime = now
+                Log.e(TAG, "🚨 BREACH TRIGGERED: $reason")
+                instance?.sixSignalMonitor?.triggerBreach(reason)
+            }
         }
 
         fun onNetworkLost() {
-            Log.e(TAG, "Network connection lost!")
-            triggerBreachAlert("ConnectivityAction: Network Lost")
+            triggerBreachAlert("Network Connectivity Lost")
+        }
+
+        fun reAcquireWakeLock() {
+            instance?.acquireLocksSafely() 
         }
     }
 
@@ -54,19 +59,20 @@ class WiFiMonitoringService : Service() {
         super.onCreate()
         instance = this
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         createNotificationChannel()
-        setManufacturerOptimizations()
+        applyManufacturerFix() 
     }
 
-    private fun setManufacturerOptimizations() {
+    private fun applyManufacturerFix() {
         val manufacturer = Build.MANUFACTURER.lowercase()
         when {
             manufacturer.contains("samsung") -> {
-                Log.d(TAG, "Samsung optimization bypass active")
-                startForeground(NOTIFICATION_ID, buildNotification(NotificationCompat.PRIORITY_MAX))
+                Log.d(TAG, "God Mode: Samsung One UI bypass active")
+                startForeground(NOTIFICATION_ID, buildNotification(NotificationCompat.PRIORITY_MAX)) 
             }
             manufacturer.contains("lenovo") -> {
-                Log.d(TAG, "Lenovo optimization bypass active")
+                Log.d(TAG, "God Mode: Lenovo background bypass active")
                 startForeground(NOTIFICATION_ID, buildNotification(NotificationCompat.PRIORITY_HIGH))
             }
             else -> {
@@ -76,84 +82,97 @@ class WiFiMonitoringService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "DOZE_ALARM") {
-            Log.d(TAG, "DOZE_ALARM fired! Re-acquiring WakeLock and verifying monitoring.")
-            acquireWakeLockSafely()
-            scheduleDozeAlarm()
+        if (intent?.action == "ALARM_CHECK") { 
+            Log.d(TAG, "God Mode: Doze ALARM_CHECK fired!")
+            acquireLocksSafely()
+            scheduleNextAlarm()
             if (!sixSignalMonitor.isMonitoringAlive()) {
-                Log.w(TAG, "Monitoring was paused by Doze! Restarting...")
+                Log.w(TAG, "God Mode: Monitoring paused by Doze! Forcing restart...")
                 sixSignalMonitor.startMonitoring()
+            } else {
+                sixSignalMonitor.forceImmediateCheck() 
             }
             return START_STICKY
         }
 
         if (!isServiceRunning) {
-            Log.i(TAG, "Starting WiFiMonitoringService...")
+            Log.i(TAG, "God Mode: Starting impenetrable monitoring...")
             isRunning = true
             isServiceRunning = true
             
-            acquireWakeLockSafely()
-            scheduleDozeAlarm()
+            acquireLocksSafely()
+            scheduleNextAlarm()
             sixSignalMonitor.startMonitoring()
         }
         
-        return START_STICKY
+        return START_STICKY 
     }
 
-    private fun scheduleDozeAlarm() {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, WiFiMonitoringService::class.java).apply {
-            action = "DOZE_ALARM"
-        }
-        val pendingIntent = PendingIntent.getService(
-            this, 0, intent,
+    private fun scheduleNextAlarm() {
+        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = PendingIntent.getService(
+            this, 1001,
+            Intent(this, WiFiMonitoringService::class.java).apply { action = "ALARM_CHECK" },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
+            am.setExactAndAllowWhileIdle( 
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
                 SystemClock.elapsedRealtime() + 55_000L,
-                pendingIntent
+                pi
+            )
+        } else {
+            am.setExact(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + 55_000L,
+                pi
             )
         }
     }
 
-    private fun acquireWakeLockSafely() {
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
+    private fun acquireLocksSafely() {
+        if (wakeLock?.isHeld == false || wakeLock == null) {
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HotelSecurity:GodModeWakeLock")
+            wakeLock?.acquire() 
         }
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "HotelSecurity:WakeLock"
-        )
-        wakeLock?.acquire(10 * 60 * 1000L)
+        if (wifiLock?.isHeld == false || wifiLock == null) {
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HotelSecurity:GodModeWifiLock")
+            wifiLock?.acquire() 
+        }
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Security Monitoring",
-                NotificationManager.IMPORTANCE_HIGH
-            )
+            val channel = NotificationChannel(CHANNEL_ID, "Security Active", NotificationManager.IMPORTANCE_HIGH)
+            channel.description = "God Mode monitoring active"
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(priority: Int): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Security System Active")
-            .setContentText("Device is aggressively monitored.")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("🔒 Security Active")
+            .setContentText("Monitoring every 15s")
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .setPriority(priority)
+            .setCategory(NotificationCompat.CATEGORY_ALARM) 
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.e(TAG, "God Mode: Task removed! Triggering immediate self-resurrection.")
+        scheduleNextAlarm() 
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        scheduleNextAlarm() 
         sixSignalMonitor.stopMonitoring()
         if (wakeLock?.isHeld == true) wakeLock?.release()
+        if (wifiLock?.isHeld == true) wifiLock?.release()
         isRunning = false
         isServiceRunning = false
         instance = null
