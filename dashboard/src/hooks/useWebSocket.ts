@@ -12,17 +12,17 @@ export function useWebSocket(url: string) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
   const [isPollingMode, setIsPollingMode] = useState<boolean>(true); 
+  const [lastSuccessfulConnection, setLastSuccessfulConnection] = useState<number>(0);
   
   const wsRef = useRef<WebSocket | null>(null);
   const pingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const healthCheckRef = useRef<NodeJS.Timeout | null>(null);
   const lastMessageTime = useRef<number>(0);
   const reconnectAttempts = useRef<number>(0);
-  const lastSuccessfulConnection = useRef<number>(0); 
 
   useEffect(() => {
     lastMessageTime.current = Date.now();
-    lastSuccessfulConnection.current = Date.now();
+    setLastSuccessfulConnection(Date.now());
     
     let isMounted = true;
 
@@ -39,7 +39,7 @@ export function useWebSocket(url: string) {
         setIsPollingMode(false); 
         reconnectAttempts.current = 0;
         lastMessageTime.current = Date.now();
-        lastSuccessfulConnection.current = Date.now();
+        setLastSuccessfulConnection(Date.now());
         console.log('⚡ God Mode: WebSocket Linked');
         
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
@@ -100,5 +100,5 @@ export function useWebSocket(url: string) {
     };
   }, [url]);
 
-  return { status, lastMessage, isPollingMode, lastSuccessfulConnection: lastSuccessfulConnection.current };
+  return { status, lastMessage, isPollingMode, lastSuccessfulConnection };
 }
