@@ -1,51 +1,141 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 class Settings(BaseSettings):
     # MongoDB
     mongodb_url: str = Field(
-        default="",
-        env="MONGODB_URL"
+        default_factory=lambda: (
+            os.environ.get("MONGODB_URL") or
+            os.getenv("MONGODB_URL") or
+            "mongodb://localhost:27017"
+        )
     )
     database_name: str = Field(
-        default="hotel_security",
-        env="DATABASE_NAME"
+        default_factory=lambda: (
+            os.environ.get("DATABASE_NAME") or
+            "hotel_security"
+        )
     )
 
     # Auth
     secret_key: str = Field(
-        default="dev-secret-key-change-in-prod",
-        env="SECRET_KEY"
+        default_factory=lambda: (
+            os.environ.get("SECRET_KEY") or
+            "dev-secret-key-change-in-prod"
+        )
     )
     api_token: str = Field(
-        default="dev-api-token",
-        env="API_TOKEN"
+        default_factory=lambda: (
+            os.environ.get("API_TOKEN") or
+            "dev-api-token"
+        )
     )
 
-    jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
-    jwt_expiration_minutes: int = Field(default=43200, env="JWT_EXPIRATION_MINUTES")
+    jwt_algorithm: str = Field(
+        default_factory=lambda: (
+            os.environ.get("JWT_ALGORITHM") or
+            "HS256"
+        )
+    )
+    jwt_expiration_minutes: int = Field(
+        default_factory=lambda: int(
+            os.environ.get("JWT_EXPIRATION_MINUTES") or
+            43200
+        )
+    )
 
     # SMTP
-    smtp_enabled: bool = Field(default=False, env="SMTP_ENABLED")
-    smtp_host: str = Field(default="smtp.gmail.com", env="SMTP_HOST")
-    smtp_port: int = Field(default=587, env="SMTP_PORT")
-    smtp_username: str = Field(default="", env="SMTP_USERNAME")
-    smtp_password: str = Field(default="", env="SMTP_PASSWORD")
-    smtp_from_email: str = Field(default="alerts@hotel-security.com", env="SMTP_FROM_EMAIL")
-    alert_email_recipients: str = Field(default="", env="ALERT_EMAIL_RECIPIENTS")
+    smtp_enabled: bool = Field(
+        default_factory=lambda: str(
+            os.environ.get("SMTP_ENABLED") or
+            "False"
+        ).lower() in ("true", "1", "yes")
+    )
+    smtp_host: str = Field(
+        default_factory=lambda: (
+            os.environ.get("SMTP_HOST") or
+            "smtp.gmail.com"
+        )
+    )
+    smtp_port: int = Field(
+        default_factory=lambda: int(
+            os.environ.get("SMTP_PORT") or
+            587
+        )
+    )
+    smtp_username: str = Field(
+        default_factory=lambda: (
+            os.environ.get("SMTP_USERNAME") or
+            ""
+        )
+    )
+    smtp_password: str = Field(
+        default_factory=lambda: (
+            os.environ.get("SMTP_PASSWORD") or
+            ""
+        )
+    )
+    smtp_from_email: str = Field(
+        default_factory=lambda: (
+            os.environ.get("SMTP_FROM_EMAIL") or
+            "alerts@hotel-security.com"
+        )
+    )
+    alert_email_recipients: str = Field(
+        default_factory=lambda: (
+            os.environ.get("ALERT_EMAIL_RECIPIENTS") or
+            ""
+        )
+    )
 
     # Slack
-    slack_enabled: bool = Field(default=False, env="SLACK_ENABLED")
-    slack_webhook_url: str = Field(default="", env="SLACK_WEBHOOK_URL")
+    slack_enabled: bool = Field(
+        default_factory=lambda: str(
+            os.environ.get("SLACK_ENABLED") or
+            "False"
+        ).lower() in ("true", "1", "yes")
+    )
+    slack_webhook_url: str = Field(
+        default_factory=lambda: (
+            os.environ.get("SLACK_WEBHOOK_URL") or
+            ""
+        )
+    )
 
     # Redis
-    redis_url: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
-    celery_enabled: bool = Field(default=True, env="CELERY_ENABLED")
+    redis_url: str = Field(
+        default_factory=lambda: (
+            os.environ.get("REDIS_URL") or
+            "redis://localhost:6379/0"
+        )
+    )
+    celery_enabled: bool = Field(
+        default_factory=lambda: str(
+            os.environ.get("CELERY_ENABLED") or
+            "True"
+        ).lower() in ("true", "1", "yes")
+    )
 
     # App
-    app_env: str = Field(default="development", env="APP_ENV")
-    debug: bool = Field(default=True, env="DEBUG")
-    cors_origins: str = Field(default="*", env="CORS_ORIGINS")
+    app_env: str = Field(
+        default_factory=lambda: (
+            os.environ.get("APP_ENV") or
+            "development"
+        )
+    )
+    debug: bool = Field(
+        default_factory=lambda: str(
+            os.environ.get("DEBUG") or
+            "True"
+        ).lower() in ("true", "1", "yes")
+    )
+    cors_origins: str = Field(
+        default_factory=lambda: (
+            os.environ.get("CORS_ORIGINS") or
+            "*"
+        )
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -55,10 +145,10 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-if not settings.mongodb_url:
-    raise ValueError(
-        "MONGODB_URL environment variable is required!"
-        " Set it in Render dashboard → Environment."
-    )
+if "localhost" in settings.mongodb_url:
+    import sys
+    print("⚠️ WARNING: Using localhost MongoDB!", flush=True)
+    print("Set MONGODB_URL environment variable!", flush=True)
+else:
+    print(f"✅ MongoDB Atlas connected: {settings.mongodb_url[:50]}...", flush=True)
 
-print("Mongo URL =", settings.mongodb_url)
