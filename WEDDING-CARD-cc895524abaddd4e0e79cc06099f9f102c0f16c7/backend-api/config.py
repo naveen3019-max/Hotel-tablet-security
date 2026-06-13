@@ -4,7 +4,7 @@ from pydantic import Field
 class Settings(BaseSettings):
     # MongoDB
     mongodb_url: str = Field(
-        default="mongodb://localhost:27017",
+        default="",
         env="MONGODB_URL"
     )
     database_name: str = Field(
@@ -54,4 +54,11 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+if not settings.mongodb_url:
+    raise ValueError(
+        "MONGODB_URL environment variable is required!"
+        " Set it in Render dashboard → Environment."
+    )
+
 print("Mongo URL =", settings.mongodb_url)
