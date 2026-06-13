@@ -140,13 +140,13 @@ class WiFiMonitoringService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             am.setExactAndAllowWhileIdle( 
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 15_000L // ← FIXED: Reduced from 55s to 15s backup interval,
+                SystemClock.elapsedRealtime() + 15_000L, // ← FIXED: Reduced from 55s to 15s backup interval
                 pi
             )
         } else {
             am.setExact(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 15_000L // ← FIXED: Reduced from 55s to 15s backup interval,
+                SystemClock.elapsedRealtime() + 15_000L, // ← FIXED: Reduced from 55s to 15s backup interval
                 pi
             )
         }
