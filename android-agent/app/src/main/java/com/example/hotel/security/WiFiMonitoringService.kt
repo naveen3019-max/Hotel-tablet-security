@@ -22,7 +22,7 @@ class WiFiMonitoringService : Service() {
     private lateinit var wifiManager: WifiManager
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    private val sixSignalMonitor = SixSignalMonitor(this)
+    val sixSignalMonitor = SixSignalMonitor(this)
     private var isServiceRunning = false
 
     companion object {
