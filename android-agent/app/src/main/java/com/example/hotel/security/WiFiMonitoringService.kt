@@ -136,11 +136,11 @@ class WiFiMonitoringService : Service() {
     }
 
     private fun acquireLocksSafely() {
-        if (wakeLock?.isHeld == false || wakeLock == null) {
+        if (wakeLock == null || wakeLock?.isHeld == false) { // ← FIXED BUG 3: Null check FIRST to prevent NPE
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HotelSecurity:GodModeWakeLock")
             wakeLock?.acquire() 
         }
-        if (wifiLock?.isHeld == false || wifiLock == null) {
+        if (wifiLock == null || wifiLock?.isHeld == false) { // ← FIXED BUG 3: Null check FIRST to prevent NPE
             wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HotelSecurity:GodModeWifiLock")
             wifiLock?.acquire() 
         }
