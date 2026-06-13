@@ -1,154 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.hotel">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    
-    <!-- ← FIXED: Added EXACT_ALARM permissions for Doze mode wakeups -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-    
-    <!-- ← FIXED: Re-stated Doze bypass permission for clarity -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    
-    <!-- ← FIXED: Added FOREGROUND_SERVICE_CONNECTED_DEVICE for Watchdog Service API 34 compliance -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.REBOOT" />
-    <uses-permission android:name="android.permission.DEVICE_POWER" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="com.samsung.android.providers.context.permission.READ_SETTINGS" />
 
     <application
         android:allowBackup="true"
-        android:usesCleartextTraffic="true"
-        android:label="Hotel Agent"
-        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
-
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HotelSecurity">
+        
         <activity
-            android:name=".MainActivity"
+            android:name=".admin.ProvisioningActivity"
             android:exported="true">
-
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-
         </activity>
-
-        <activity
-            android:name=".ui.LockActivity"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTask"
-            android:screenOrientation="portrait"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:showForAllUsers="true"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.WifiPinDialog"
-            android:theme="@android:style/Theme.Dialog"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTask"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.PowerOffPinDialog"
-            android:theme="@android:style/Theme.Dialog"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:launchMode="singleTask"
-            android:exported="false" />
-
-        <activity
-            android:name=".admin.AdminActivity"
-            android:exported="false"
-            android:theme="@style/Theme.AppCompat.DayNight" />
-
-        <activity
-            android:name=".admin.CalibrationActivity"
-            android:exported="false"
-            android:screenOrientation="portrait"
-            android:theme="@style/Theme.AppCompat.DayNight" />
-
-        <activity
-            android:name=".admin.ProvisioningActivity"
-            android:exported="false"
-            android:screenOrientation="portrait"
-            android:theme="@style/Theme.AppCompat.DayNight" />
-
-        <service
-            android:name=".service.KioskService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-
-        <receiver
-            android:name=".admin.HotelDeviceAdminReceiver"
-            android:exported="true"
-            android:permission="android.permission.BIND_DEVICE_ADMIN">
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin_policies" />
-            <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-            </intent-filter>
-        </receiver>
-
-        <receiver android:name=".security.UninstallReceiver" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.PACKAGE_REMOVED" />
-                <data android:scheme="package" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".security.WifiStateReceiver"
-            android:exported="true"
-            android:enabled="true">
-            <intent-filter android:priority="999">
-                <action android:name="android.net.wifi.WIFI_STATE_CHANGED" />
-                <action android:name="android.net.wifi.STATE_CHANGE" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".security.ShutdownReceiver"
-            android:exported="true"
-            android:enabled="true">
-            <intent-filter android:priority="999">
-                <action android:name="android.intent.action.ACTION_SHUTDOWN" />
-                <action android:name="android.intent.action.REBOOT" />
-                <action android:name="android.intent.action.QUICKBOOT_POWEROFF" />
-                <action android:name="com.android.internal.intent.action.REQUEST_SHUTDOWN" />
-            </intent-filter>
-        </receiver>
 
         <service
             android:name=".security.WiFiMonitoringService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="location" />
-
-        <!-- ← FIXED: Added WatchdogService declaration with correct Android 14 type -->
+            android:foregroundServiceType="connectedDevice" />
+            
         <service
             android:name=".security.WatchdogService"
             android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:exported="false" />
 
         <receiver
             android:name=".security.BootReceiver"
@@ -158,9 +50,13 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.lenovo.sleepmode.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
-
+        
+        <receiver android:name=".security.ScreenAndWiFiReceiver"
+                  android:enabled="true"
+                  android:exported="false" />
     </application>
-
 </manifest>

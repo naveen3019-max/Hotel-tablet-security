@@ -157,7 +157,7 @@ class SixSignalMonitor(private val context: Context) {
     }
 
     private fun sendBreachAlertToBackend(reason: String) {
-        val baseUrl = sharedPrefs.getString("backend_base_url", "https://hotel-backend-zqc1.onrender.com")
+        val baseUrl = sharedPrefs.getString("backend_base_url", "https://hotel-tablet-security.onrender.com")
         val deviceId = sharedPrefs.getString("device_id", "UNKNOWN_DEVICE")
 
         thread {

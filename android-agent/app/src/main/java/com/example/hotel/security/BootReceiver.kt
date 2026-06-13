@@ -7,31 +7,28 @@ import android.os.Build
 import android.util.Log
 
 class BootReceiver : BroadcastReceiver() {
-    
-    companion object {
-        private const val TAG = "BootReceiver"
-        // Intent used by HTC/Samsung/Lenovo for "Quick Boot"
-        private const val ACTION_QUICKBOOT_POWERON = "android.intent.action.QUICKBOOT_POWERON"
-        private const val ACTION_HTC_QUICKBOOT = "com.htc.intent.action.QUICKBOOT_POWERON"
-    }
+    private val TAG = "BootReceiver"
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED || 
-            intent.action == ACTION_QUICKBOOT_POWERON ||
-            intent.action == ACTION_HTC_QUICKBOOT) {
-            
-            Log.i(TAG, "Device boot completed. Restarting WiFiMonitoringService...")
-            
-            val serviceIntent = Intent(context, WiFiMonitoringService::class.java)
-            
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
+        Log.i(TAG, "Broadcast received: ${intent.action}")
+        
+        val isBootAction = intent.action == Intent.ACTION_BOOT_COMPLETED ||
+                           intent.action == "android.intent.action.QUICKBOOT_POWERON" ||
+                           intent.action == "com.htc.intent.action.QUICKBOOT_POWERON" ||
+                           intent.action == "com.lenovo.sleepmode.BOOT_COMPLETED" ||
+                           intent.action == Intent.ACTION_MY_PACKAGE_REPLACED
+
+        if (isBootAction) {
+            Log.i(TAG, "Boot or package update detected. Starting core services.")
+            val monitorIntent = Intent(context, WiFiMonitoringService::class.java)
+            val watchdogIntent = Intent(context, WatchdogService::class.java)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(monitorIntent)
+                context.startForegroundService(watchdogIntent)
+            } else {
+                context.startService(monitorIntent)
+                context.startService(watchdogIntent)
             }
         }
     }

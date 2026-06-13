@@ -101,8 +101,8 @@ class ProvisioningActivity : AppCompatActivity() {
         layout.addView(backendUrlLabel)
         
         backendUrlInput = EditText(this).apply {
-            hint = "https://hotel-backend-zqc1.onrender.com/"
-            setText("https://hotel-backend-zqc1.onrender.com/")  // Default value
+            hint = "https://hotel-tablet-security.onrender.com/"
+            setText("https://hotel-tablet-security.onrender.com/")  // Default value
             setPadding(16, 16, 16, 16)
         }
         layout.addView(backendUrlInput)

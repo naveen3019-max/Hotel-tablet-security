@@ -1,143 +1,89 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from 'react';
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected";
+type ConnectionStatus = 'connected' | 'disconnected' | 'connecting';
 
-export interface WebSocketMessage {
-  type: string;
-  data?: Record<string, unknown>;
-  timestamp?: string;
-  message?: string;
-}
-
-interface UseWebSocketReturn {
-  lastMessage: WebSocketMessage | null;
-  connectionStatus: ConnectionStatus;
-}
-
-const BACKOFF_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
-
-export function useWebSocket(url: string): UseWebSocketReturn {
-  const socketRef = useRef<WebSocket | null>(null);
-  const retryCountRef = useRef<number>(0);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // ← FIXED: Clean isMounted ref to prevent setState on unmounted component
-  const isMounted = useRef(true);
-
-  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
-
-  const getWsUrl = useCallback((httpUrl: string): string => {
-    // ← FIXED: URL conversion with explicit regex for http and https
-    return httpUrl.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://") + "/ws/dashboard";
-  }, []);
+export function useWebSocket(url: string) {
+  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
+  const [lastMessage, setLastMessage] = useState<any>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout>();
+  const lastMessageTime = useRef<number>(Date.now());
+  const healthCheckIntervalRef = useRef<NodeJS.Timeout>();
 
   const connect = useCallback(() => {
-    if (!isMounted.current) return;
-    
-    if (
-      socketRef.current &&
-      (socketRef.current.readyState === WebSocket.OPEN ||
-        socketRef.current.readyState === WebSocket.CONNECTING)
-    ) {
-      return;
-    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const wsUrl = getWsUrl(url);
-    if (isMounted.current) setConnectionStatus("connecting");
-    console.log(`[WS] Connecting to ${wsUrl}...`);
-
-    const ws = new WebSocket(wsUrl);
-    socketRef.current = ws;
+    setStatus('connecting');
+    const ws = new WebSocket(url);
 
     ws.onopen = () => {
-      console.log("[WS] Connected.");
-      if (!isMounted.current) {
-        ws.close();
-        return;
-      }
+      setStatus('connected');
+      lastMessageTime.current = Date.now();
+      console.log('WebSocket connected');
       
-      // ← FIXED: Reset delay to 1s on successful connection
-      retryCountRef.current = 0;
-      setConnectionStatus("connected");
-
-      // ← FIXED: Ping/Pong keepalive - send ping every 30 seconds
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      pingIntervalRef.current = setInterval(() => {
+      if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
+      reconnectTimerRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send("ping");
-          console.log("[WS] Sent ping");
+          ws.send(JSON.stringify({ type: 'ping' }));
         }
       }, 30000);
     };
 
-    ws.onmessage = (event: MessageEvent) => {
-      if (!isMounted.current) return;
-      
+    ws.onmessage = (event) => {
+      lastMessageTime.current = Date.now();
       try {
-        const parsed: WebSocketMessage = JSON.parse(event.data as string);
-        
-        // ← FIXED: Ignore incoming "pong" messages silently
-        if (parsed.type === "pong") {
-          console.log("[WS] Received pong");
+        const data = JSON.parse(event.data);
+        if (data.type === 'pong') {
           return;
         }
-        
-        // ← FIXED: Log every message to console for debugging
-        console.log("[WS] Received message:", parsed);
-        setLastMessage(parsed);
-      } catch {
-        console.warn("[WS] Received non-JSON message:", event.data);
+        setLastMessage(data);
+      } catch (e) {
+        console.error('WebSocket parse error:', e);
       }
-    };
-
-    ws.onerror = (err) => {
-      console.error("[WS] Error:", err);
     };
 
     ws.onclose = () => {
-      // ← FIXED: Stop ping interval when connection closes
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
-      }
-
-      if (!isMounted.current) return;
-      
-      console.warn("[WS] Disconnected.");
-      setConnectionStatus("disconnected");
-
-      // ← FIXED: Proper exponential backoff reconnect
-      const delay = BACKOFF_DELAYS[Math.min(retryCountRef.current, BACKOFF_DELAYS.length - 1)];
-      retryCountRef.current += 1;
-
-      console.log(`[WS] Retrying in ${delay / 1000}s (attempt ${retryCountRef.current})...`);
-      setConnectionStatus("connecting");
-
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-      // ← FIXED: Never stop retrying while component is mounted
-      retryTimerRef.current = setTimeout(() => {
-        connect();
-      }, delay);
+      setStatus('disconnected');
+      if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
     };
-  }, [url, getWsUrl]);
 
-  useEffect(() => {
-    isMounted.current = true;
-    connect();
-
-    return () => {
-      // ← FIXED: Clean isMounted ref set to false on unmount
-      isMounted.current = false;
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-      
-      if (socketRef.current) {
-        socketRef.current.onclose = null;
-        socketRef.current.close();
-      }
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      ws.close();
     };
+
+    wsRef.current = ws;
+  }, [url]);
+
+  const forceReconnect = useCallback(() => {
+    console.log('🔄 Force reconnecting...');
+    setStatus('disconnected');
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setTimeout(() => {
+      connect();
+    }, 1000);
   }, [connect]);
 
-  return { lastMessage, connectionStatus };
+  useEffect(() => {
+    connect();
+
+    healthCheckIntervalRef.current = setInterval(() => {
+      const timeSinceLastMessage = Date.now() - lastMessageTime.current;
+      if (timeSinceLastMessage > 60000) {
+        console.warn('Silent disconnect detected! No message in 60s.');
+        forceReconnect();
+      }
+    }, 5000);
+
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+      if (reconnectTimerRef.current) clearInterval(reconnectTimerRef.current);
+      if (healthCheckIntervalRef.current) clearInterval(healthCheckIntervalRef.current);
+    };
+  }, [connect, forceReconnect]);
+
+  return { status, lastMessage };
 }

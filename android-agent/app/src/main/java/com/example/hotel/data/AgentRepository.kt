@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 class AgentRepository(context: Context) {
     private val prefs = context.getSharedPreferences("agent", Context.MODE_PRIVATE)
-    private val baseUrl = prefs.getString("backend_url", "https://hotel-backend-zqc1.onrender.com/") ?: "https://hotel-backend-zqc1.onrender.com/"
+    private val baseUrl = prefs.getString("backend_url", "https://hotel-tablet-security.onrender.com/") ?: "https://hotel-tablet-security.onrender.com/"
     
     init {
         Log.d("AgentRepository", "Initialized with baseUrl: $baseUrl")
