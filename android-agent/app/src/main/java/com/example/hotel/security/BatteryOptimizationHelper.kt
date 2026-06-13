@@ -20,20 +20,26 @@ object BatteryOptimizationHelper {
     private fun showManufacturerSpecificDialog(context: Context) {
         val manufacturer = Build.MANUFACTURER.lowercase()
         val message = when {
-            manufacturer.contains("samsung") -> "CRITICAL SETUP (Samsung):
-1. Settings -> Device Care -> Battery
-2. Tap 'Background usage limits'
-3. Tap 'Never sleeping apps'
-4. Tap '+' and add Hotel Agent"
-            manufacturer.contains("lenovo") -> "CRITICAL SETUP (Lenovo):
-1. Settings -> Battery
-2. Tap 'Background app management'
-3. Find Hotel Agent
-4. Select 'No restrictions'"
-            else -> "CRITICAL SETUP:
-1. Settings -> Apps -> Hotel Agent
-2. Tap Battery
-3. Select 'Unrestricted'"
+            manufacturer.contains("samsung") -> """
+                CRITICAL SETUP (Samsung):
+                1. Settings -> Device Care -> Battery
+                2. Tap 'Background usage limits'
+                3. Tap 'Never sleeping apps'
+                4. Tap '+' and add Hotel Agent
+            """.trimIndent()
+            manufacturer.contains("lenovo") -> """
+                CRITICAL SETUP (Lenovo):
+                1. Settings -> Battery
+                2. Tap 'Background app management'
+                3. Find Hotel Agent
+                4. Select 'No restrictions'
+            """.trimIndent()
+            else -> """
+                CRITICAL SETUP:
+                1. Settings -> Apps -> Hotel Agent
+                2. Tap Battery
+                3. Select 'Unrestricted'
+            """.trimIndent()
         }
 
         AlertDialog.Builder(context)
