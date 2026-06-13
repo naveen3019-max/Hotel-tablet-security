@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -24,6 +25,7 @@ class WiFiMonitoringService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     val sixSignalMonitor = SixSignalMonitor(this)
     private var isServiceRunning = false
+    private lateinit var wifiReceiver: ScreenAndWiFiReceiver // ← FIXED: Receiver field for programmatic registration
 
     companion object {
         private const val TAG = "WiFiMonitoringService"
@@ -66,7 +68,13 @@ class WiFiMonitoringService : Service() {
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         createNotificationChannel()
-        applyManufacturerFix() 
+        applyManufacturerFix()
+
+        // ← FIXED: Register WiFi broadcast receiver programmatically inside the service
+        // This is REQUIRED for ACTION_SCREEN_OFF to work (cannot use Manifest registration)
+        wifiReceiver = ScreenAndWiFiReceiver()
+        wifiReceiver.register(this)
+        Log.d(TAG, "✅ WiFi broadcast receiver registered in service")
     }
 
     private fun applyManufacturerFix() {
@@ -87,6 +95,15 @@ class WiFiMonitoringService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // ← FIXED: Handle WIFI_OFF_BREACH from BroadcastReceiver — instant check
+        if (intent?.action == "WIFI_OFF_BREACH") {
+            Log.e(TAG, "🚨 WiFi OFF broadcast received! Forcing immediate check.")
+            acquireLocksSafely()
+            sixSignalMonitor.forceImmediateCheck()
+            scheduleNextAlarm()
+            return START_STICKY
+        }
+
         if (intent?.action == "ALARM_CHECK") { 
             Log.d(TAG, "God Mode: Doze ALARM_CHECK fired!")
             acquireLocksSafely()
@@ -123,13 +140,13 @@ class WiFiMonitoringService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             am.setExactAndAllowWhileIdle( 
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 55_000L,
+                SystemClock.elapsedRealtime() + 15_000L // ← FIXED: Reduced from 55s to 15s backup interval,
                 pi
             )
         } else {
             am.setExact(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 55_000L,
+                SystemClock.elapsedRealtime() + 15_000L // ← FIXED: Reduced from 55s to 15s backup interval,
                 pi
             )
         }
@@ -174,6 +191,12 @@ class WiFiMonitoringService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // ← FIXED: Unregister broadcast receiver before cleanup
+        try {
+            wifiReceiver.unregister(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "Receiver already unregistered: $e")
+        }
         scheduleNextAlarm() 
         sixSignalMonitor.stopMonitoring()
         if (wakeLock?.isHeld == true) wakeLock?.release()
