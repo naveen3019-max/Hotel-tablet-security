@@ -53,6 +53,11 @@ class WiFiMonitoringService : Service() {
         fun reAcquireWakeLock() {
             instance?.acquireLocksSafely() 
         }
+
+        fun setMonitoringInterval(interval: Long, reason: String = "") {
+            Log.i(TAG, "God Mode: Interval strictly fixed at 15s. Ignoring request for $interval ms. Reason: $reason")
+            reAcquireWakeLock()
+        }
     }
 
     override fun onCreate() {
