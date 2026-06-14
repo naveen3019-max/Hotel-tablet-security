@@ -151,8 +151,9 @@ async def monitor_device_heartbeats():
     """Background task to detect devices that stop sending heartbeats (WiFi OFF)"""
     logger.info("🔍 Starting heartbeat monitoring task for WiFi OFF detection")
     
-    # Heartbeat timeout: 15 seconds (devices send heartbeats every 4 seconds)
-    HEARTBEAT_TIMEOUT_SECONDS = 15
+    # Heartbeat timeout: 35 seconds
+    # (devices send heartbeats every 10 seconds. 35s provides a safe buffer for network jitter)
+    HEARTBEAT_TIMEOUT_SECONDS = 35
     
     while True:
         try:
