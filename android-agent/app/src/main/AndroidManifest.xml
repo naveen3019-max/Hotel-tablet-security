@@ -158,16 +158,19 @@
             </intent-filter>
         </service>
 
+        <!-- BootReceiver: restarts WiFiMonitoringService after device reboot.
+             exported=true is required so the OS can deliver BOOT_COMPLETED.
+             RECEIVE_BOOT_COMPLETED permission declared above. -->
         <receiver
             android:name=".security.BootReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
+                <!-- Standard boot completed action -->
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- HTC / LG / Lenovo fast-boot: fires instead of BOOT_COMPLETED
+                     on some OEM ROMs when the device wakes from deep sleep. -->
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.lenovo.sleepmode.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
         

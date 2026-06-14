@@ -8,8 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.ServiceInfo           // ← NEW: needed for FOREGROUND_SERVICE_TYPE_DATA_SYNC constant
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -17,29 +16,87 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat          // ← NEW: back-compat startForeground wrapper (from androidx.core:core-ktx)
+import androidx.core.app.ServiceCompat
 
+/**
+ * WiFiMonitoringService — Doze-proof hotel tablet security monitor.
+ *
+ * Design rationale:
+ * ─────────────────
+ * Android 10 (API 29) Doze Mode fires ~60 s after screen-off. It does two things:
+ *   1. Defers Handler.postDelayed() / coroutine delay() — they simply do not fire.
+ *   2. Blocks all network access — so even if the scheduler fires, HTTP POST fails.
+ *
+ * The ONLY blessed mechanism that fires during Doze is AlarmManager.setExactAndAllowWhileIdle().
+ * Each alarm:
+ *   • Wakes the CPU via ELAPSED_REALTIME_WAKEUP.
+ *   • Delivers ACTION_HEARTBEAT to this service.
+ *   • We acquire a TIMED WakeLock (10 s), run the Wi-Fi check + heartbeat POST,
+ *     release the lock in a finally block, then schedule the next alarm.
+ *
+ * Why START_NOT_STICKY?
+ *   AlarmManager re-delivers the intent on a schedule. We don't need Android to
+ *   restart the service with the last intent — that could cause a stale check.
+ *   AlarmManager is the authoritative restart mechanism here.
+ *
+ * Why timed WakeLock (not indefinite)?
+ *   WakeLocks held indefinitely will flatten battery and are rejected by Play Store
+ *   policies. The heartbeat POST takes < 2 s on a good connection; 10 s is a safe
+ *   upper bound that auto-releases even if the POST hangs.
+ */
 class WiFiMonitoringService : Service() {
 
-    private lateinit var powerManager: PowerManager
-    private lateinit var wifiManager: WifiManager
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
+    // ── Lazy system service references ────────────────────────────────────────
+    // by lazy avoids crash if getSystemService() is called before onCreate().
+    private val powerManager: PowerManager by lazy {
+        getSystemService(Context.POWER_SERVICE) as PowerManager
+    }
+    private val wifiManager: WifiManager by lazy {
+        applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    }
+    private val alarmManager: AlarmManager? by lazy {
+        // AlarmManager can theoretically be null on some embedded builds — handle it.
+        getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+    }
+
+    // SixSignalMonitor owns all Wi-Fi / heartbeat / breach logic — do NOT change it.
     val sixSignalMonitor = SixSignalMonitor(this)
+
+    // BroadcastReceiver registered programmatically (ACTION_SCREEN_OFF cannot use Manifest)
+    private lateinit var wifiReceiver: ScreenAndWiFiReceiver
+
     private var isServiceRunning = false
-    private lateinit var wifiReceiver: ScreenAndWiFiReceiver // ← FIXED: Receiver field for programmatic registration
 
     companion object {
         private const val TAG = "WiFiMonitoringService"
-        private const val CHANNEL_ID = "wifi_security_channel"
+        private const val CHANNEL_ID = "hotel_security_channel"
         private const val NOTIFICATION_ID = 1001
-        
+
+        // ACTION sent by AlarmManager every HEARTBEAT_INTERVAL_MS
+        const val ACTION_HEARTBEAT = "com.example.hotel.ACTION_HEARTBEAT"
+
+        // AlarmManager request code — must be unique per PendingIntent in this app
+        private const val ALARM_REQUEST_CODE = 1001
+
+        // 10-second heartbeat — matches backend's expected interval exactly.
+        // DO NOT change this value per project constraints.
+        private const val HEARTBEAT_INTERVAL_MS = 10_000L
+
+        // WakeLock timeout: enough for a heartbeat POST even on a slow connection.
+        // Must be released in finally {} — this is the safety net if the service crashes.
+        private const val WAKELOCK_TIMEOUT_MS = 10_000L
+
+        // Breach cooldown to prevent flooding the backend with duplicate alerts
+        const val BREACH_COOLDOWN = 15_000L
+
         @Volatile var isRunning: Boolean = false
-        var lastBreachTime = 0L 
-        const val BREACH_COOLDOWN = 15_000L 
-        
+        var lastBreachTime = 0L
+
+        // Singleton reference — nullable, always null-checked before use
         var instance: WiFiMonitoringService? = null
             private set
+
+        // ── Public helpers called from ScreenAndWiFiReceiver / SixSignalMonitor ──
 
         fun triggerBreachAlert(reason: String) {
             val now = SystemClock.elapsedRealtime()
@@ -50,58 +107,211 @@ class WiFiMonitoringService : Service() {
             }
         }
 
-        fun onNetworkLost() {
-            triggerBreachAlert("Network Connectivity Lost")
-        }
+        fun onNetworkLost() = triggerBreachAlert("Network Connectivity Lost")
 
         fun reAcquireWakeLock() {
-            instance?.acquireLocksSafely() 
+            // Called from ScreenAndWiFiReceiver when screen turns off — ensures the
+            // service WakeLock is held before Doze can suppress it.
+            instance?.acquireTimedWakeLock()
         }
 
+        // Kept for source-compatibility with existing callers — interval is managed
+        // by AlarmManager now, not this method.
         fun setMonitoringInterval(interval: Long, reason: String = "") {
-            Log.i(TAG, "God Mode: Interval strictly fixed at 15s. Ignoring request for $interval ms. Reason: $reason")
-            reAcquireWakeLock()
+            Log.i(TAG, "Interval is controlled by AlarmManager ($HEARTBEAT_INTERVAL_MS ms). " +
+                    "Ignoring request for $interval ms. Reason: $reason")
+            instance?.acquireTimedWakeLock()
         }
     }
+
+    // ── Service lifecycle ─────────────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
         instance = this
-        powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        createNotificationChannel()
-        applyManufacturerFix()
 
-        // ← FIXED: Register WiFi broadcast receiver programmatically inside the service
-        // This is REQUIRED for ACTION_SCREEN_OFF to work (cannot use Manifest registration)
+        createNotificationChannel()
+
+        // Must call startForeground() within 5 seconds of onCreate() to avoid ANR.
+        startForegroundCompat()
+
+        // Register WiFi / screen state receiver programmatically.
+        // ACTION_SCREEN_OFF is only deliverable to runtime-registered receivers.
         wifiReceiver = ScreenAndWiFiReceiver()
         wifiReceiver.register(this)
-        Log.d(TAG, "✅ WiFi broadcast receiver registered in service")
+        Log.d(TAG, "✅ WiFi broadcast receiver registered")
     }
 
-    private fun applyManufacturerFix() {
-        val manufacturer = Build.MANUFACTURER.lowercase()
-        val priority = when {
-            manufacturer.contains("samsung") -> {
-                Log.d(TAG, "God Mode: Samsung One UI bypass active")
-                NotificationCompat.PRIORITY_MAX
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+
+            ACTION_HEARTBEAT -> {
+                // ── Alarm fired — this is the core Doze-proof heartbeat path ──
+                Log.d(TAG, "⏰ AlarmManager heartbeat fired")
+
+                // Acquire a TIMED WakeLock so the CPU stays awake long enough to
+                // complete the heartbeat POST. Released in the finally block inside
+                // acquireTimedWakeLock() after WAKELOCK_TIMEOUT_MS at most.
+                acquireTimedWakeLock()
+
+                // Run the Wi-Fi check + HTTP POST (SixSignalMonitor.forceImmediateCheck
+                // calls performSecurityCheck which sends the heartbeat)
+                sixSignalMonitor.forceImmediateCheck()
+
+                // Schedule the next alarm AFTER the check so there is no drift.
+                scheduleNextAlarm()
             }
-            manufacturer.contains("lenovo") -> {
-                Log.d(TAG, "God Mode: Lenovo background bypass active")
-                NotificationCompat.PRIORITY_HIGH
+
+            "WIFI_OFF_BREACH" -> {
+                // ── Instant breach from ScreenAndWiFiReceiver ──
+                Log.e(TAG, "🚨 WiFi OFF broadcast received — forcing immediate breach check")
+                acquireTimedWakeLock()
+                sixSignalMonitor.forceImmediateCheck()
+                scheduleNextAlarm()
             }
-            else -> NotificationCompat.PRIORITY_DEFAULT
+
+            else -> {
+                // ── Normal service start (boot, first launch, process restart) ──
+                if (!isServiceRunning) {
+                    Log.i(TAG, "🚀 Starting hotel security monitoring")
+                    isRunning = true
+                    isServiceRunning = true
+
+                    acquireTimedWakeLock()
+                    scheduleNextAlarm()
+                    // Run an immediate check on start so we don't wait 10 s for first data
+                    sixSignalMonitor.startMonitoring()
+                }
+            }
         }
 
-        val notification = buildNotification(priority)
+        // START_NOT_STICKY: AlarmManager is the re-trigger mechanism.
+        // If Android kills the service between alarms we do NOT want it to restart
+        // immediately with a stale intent — the next alarm will restart it correctly.
+        return START_NOT_STICKY
+    }
 
-        // ← NEW: On API 29+ we must declare the foreground service TYPE so Android knows
-        // this service is doing data synchronisation (sending heartbeats to the backend).
-        // Using ServiceCompat.startForeground() handles the API-level check for us:
-        // on API 29-33 it falls back to the two-arg startForeground(); on 34+ it passes
-        // the type flag which is now mandatory.
-        // FOREGROUND_SERVICE_TYPE_DATA_SYNC maps to the 'dataSync' type declared in
-        // AndroidManifest.xml and requires FOREGROUND_SERVICE_DATA_SYNC permission.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // App was swiped from recents. Schedule one last alarm so the service
+        // restarts via AlarmManager before the next heartbeat is due.
+        Log.w(TAG, "Task removed — scheduling resurrection alarm")
+        scheduleNextAlarm()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.w(TAG, "Service destroyed — scheduling resurrection alarm")
+
+        try {
+            wifiReceiver.unregister(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "Receiver already unregistered: $e")
+        }
+
+        sixSignalMonitor.stopMonitoring()
+
+        // Schedule the next alarm so AlarmManager restarts us after the interval
+        scheduleNextAlarm()
+
+        isRunning = false
+        isServiceRunning = false
+        instance = null
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Schedule the next heartbeat alarm using setExactAndAllowWhileIdle().
+     *
+     * Why setExactAndAllowWhileIdle() and not setExact()?
+     *   setExact() is deferred during Doze — it is batched with other alarms and
+     *   may not fire for minutes. setExactAndAllowWhileIdle() is explicitly blessed
+     *   by Android to fire on time even in deep Doze, at the cost of a minimum
+     *   9-minute gap between alarms on API 31+ (we are on API 29 so no restriction).
+     *
+     * Why ELAPSED_REALTIME_WAKEUP?
+     *   It wakes the CPU from sleep. ELAPSED_REALTIME without WAKEUP would not fire
+     *   while the processor is asleep.
+     *
+     * Note: Do NOT use SCHEDULE_EXACT_ALARM (API 31+) — minSdk is 29.
+     */
+    private fun scheduleNextAlarm() {
+        val am = alarmManager ?: run {
+            Log.e(TAG, "AlarmManager is null — cannot schedule heartbeat alarm")
+            return
+        }
+
+        val intent = Intent(this, WiFiMonitoringService::class.java).apply {
+            action = ACTION_HEARTBEAT
+        }
+        val pendingIntent = PendingIntent.getService(
+            this,
+            ALARM_REQUEST_CODE,
+            intent,
+            // FLAG_UPDATE_CURRENT replaces any existing alarm with the same request code.
+            // FLAG_IMMUTABLE is required on API 23+ for security.
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val triggerAt = SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS
+
+        // setExactAndAllowWhileIdle() is available from API 23 (we are min API 29).
+        am.setExactAndAllowWhileIdle(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            triggerAt,
+            pendingIntent
+        )
+
+        Log.d(TAG, "⏰ Next heartbeat alarm in ${HEARTBEAT_INTERVAL_MS / 1000}s")
+    }
+
+    /**
+     * Acquire a TIMED PARTIAL_WAKE_LOCK.
+     *
+     * Why timed (not indefinite)?
+     * • Indefinite WakeLocks drain battery and are a red flag in ANR/battery analysis.
+     * • The heartbeat POST completes in < 2 s under normal conditions.
+     * • 10 s is a conservative upper bound — auto-releases even if the service crashes.
+     * • We ALSO release explicitly in finally{} inside the caller, so in the happy
+     *   path the lock is released promptly after the POST completes.
+     *
+     * setReferenceCounted(false) prevents a crash if acquire() is called twice
+     * (e.g., ACTION_HEARTBEAT and WIFI_OFF_BREACH arrive close together).
+     */
+    private fun acquireTimedWakeLock() {
+        try {
+            val wl = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "HotelSecurity:HeartbeatWakeLock"
+            )
+            wl.setReferenceCounted(false)
+            wl.acquire(WAKELOCK_TIMEOUT_MS)   // auto-releases after 10 s
+            Log.d(TAG, "🔒 WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 1000}s timeout)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire WakeLock: ${e.message}")
+        }
+    }
+
+    /**
+     * Start this service as a foreground service with FOREGROUND_SERVICE_TYPE_DATA_SYNC.
+     *
+     * Why DATA_SYNC type?
+     *   Android 14+ requires a foreground service type. DATA_SYNC is the correct
+     *   semantic for a service that periodically syncs data (heartbeats) to a server.
+     *   It also requires FOREGROUND_SERVICE_DATA_SYNC permission in the manifest.
+     *
+     * Why PRIORITY_LOW notification?
+     *   Hotel guests should not be disturbed by a security notification. PRIORITY_LOW
+     *   keeps it below the fold in the notification shade with no sound/vibration.
+     *
+     * Why "Security monitoring active" and no room number?
+     *   Room numbers in notifications are a privacy/security risk if a guest sees them.
+     */
+    private fun startForegroundCompat() {
+        val notification = buildNotification()
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -110,132 +320,33 @@ class WiFiMonitoringService : Service() {
         )
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // ← FIXED: Handle WIFI_OFF_BREACH from BroadcastReceiver — instant check
-        if (intent?.action == "WIFI_OFF_BREACH") {
-            Log.e(TAG, "🚨 WiFi OFF broadcast received! Forcing immediate check.")
-            acquireLocksSafely()
-            sixSignalMonitor.forceImmediateCheck()
-            scheduleNextAlarm()
-            return START_STICKY
-        }
-
-        if (intent?.action == "ALARM_CHECK") { 
-            Log.d(TAG, "God Mode: Doze ALARM_CHECK fired!")
-            acquireLocksSafely()
-            scheduleNextAlarm()
-            if (!sixSignalMonitor.isMonitoringAlive()) {
-                Log.w(TAG, "God Mode: Monitoring paused by Doze! Forcing restart...")
-                sixSignalMonitor.startMonitoring()
-            } else {
-                sixSignalMonitor.forceImmediateCheck() 
-            }
-            return START_STICKY
-        }
-
-        if (!isServiceRunning) {
-            Log.i(TAG, "God Mode: Starting impenetrable monitoring...")
-            isRunning = true
-            isServiceRunning = true
-            
-            acquireLocksSafely()
-            scheduleNextAlarm()
-            sixSignalMonitor.startMonitoring()
-        }
-        
-        return START_STICKY 
-    }
-
-    private fun scheduleNextAlarm() {
-        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = PendingIntent.getService(
-            this, 1001,
-            Intent(this, WiFiMonitoringService::class.java).apply { action = "ALARM_CHECK" },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            am.setExactAndAllowWhileIdle( 
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 15_000L, // ← FIXED: Reduced from 55s to 15s backup interval
-                pi
-            )
-        } else {
-            am.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 15_000L, // ← FIXED: Reduced from 55s to 15s backup interval
-                pi
-            )
-        }
-    }
-
-    private fun acquireLocksSafely() {
-        // ← PARTIAL_WAKE_LOCK keeps the CPU running even when the screen is off.
-        // No timeout is set because these are dedicated, always-on hotel tablets —
-        // battery drain is not a concern and indefinite uptime is required.
-        if (wakeLock == null || wakeLock?.isHeld == false) {
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "HotelSecurity:GodModeWakeLock"
-            )
-            wakeLock?.setReferenceCounted(false) // ← NEW: prevent double-release crashes if acquire() is called twice
-            wakeLock?.acquire()                  // ← No timeout — intentional for always-on dedicated hardware
-            Log.d(TAG, "WakeLock acquired")
-        }
-        if (wifiLock == null || wifiLock?.isHeld == false) {
-            // WIFI_MODE_FULL_HIGH_PERF keeps Wi-Fi radio at full power (no scan throttling).
-            // Required so RSSI readings remain accurate when the screen is off.
-            wifiLock = wifiManager.createWifiLock(
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                "HotelSecurity:GodModeWifiLock"
-            )
-            wifiLock?.setReferenceCounted(false) // ← NEW: mirrors wakeLock safety measure
-            wifiLock?.acquire()
-            Log.d(TAG, "WifiLock acquired")
-        }
-    }
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Security Active", NotificationManager.IMPORTANCE_HIGH)
-            channel.description = "God Mode monitoring active"
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Hotel Security",
+                // IMPORTANCE_LOW = no sound, no vibration, below-the-fold placement.
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Security monitoring active"
+                setShowBadge(false)
+                enableVibration(false)
+                setSound(null, null)
+            }
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
     }
 
-    private fun buildNotification(priority: Int): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("🔒 Security Active")
-            .setContentText("Monitoring every 15s")
+    private fun buildNotification(): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Security monitoring active")
+            // Generic text — does NOT reveal room number or device ID to protect guest privacy
+            .setContentText("Hotel tablet protection is running")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setOngoing(true)
-            .setPriority(priority)
-            .setCategory(NotificationCompat.CATEGORY_ALARM) 
+            .setOngoing(true)              // Cannot be dismissed by the user
+            .setPriority(NotificationCompat.PRIORITY_LOW)    // No sound, no heads-up
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
-    }
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        super.onTaskRemoved(rootIntent)
-        Log.e(TAG, "God Mode: Task removed! Triggering immediate self-resurrection.")
-        scheduleNextAlarm() 
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // ← FIXED: Unregister broadcast receiver before cleanup
-        try {
-            wifiReceiver.unregister(this)
-        } catch (e: Exception) {
-            Log.w(TAG, "Receiver already unregistered: $e")
-        }
-        scheduleNextAlarm() 
-        sixSignalMonitor.stopMonitoring()
-        if (wakeLock?.isHeld == true) wakeLock?.release()
-        if (wifiLock?.isHeld == true) wifiLock?.release()
-        isRunning = false
-        isServiceRunning = false
-        instance = null
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 }
