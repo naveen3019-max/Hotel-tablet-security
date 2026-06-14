@@ -21,6 +21,13 @@ class SixSignalMonitor(private val context: Context) {
     private var lastCheckTime = 0L
     private var lastBreachSentTime = 0L // Cooldown tracker to prevent backend spam
     private var firstWifiLossTime = 0L // Tracks when Wi-Fi loss was first detected
+    private var isStartupGracePeriod = true
+
+    init {
+        Handler(Looper.getMainLooper()).postDelayed({
+            isStartupGracePeriod = false
+        }, 5000L)
+    }
 
     companion object {
         private const val TAG = "SixSignalMonitor"
@@ -137,6 +144,11 @@ class SixSignalMonitor(private val context: Context) {
 
     // ← FIXED BUG 1: Complete rewrite of security check with proper threshold
     private fun performSecurityCheck() {
+        if (isStartupGracePeriod) {
+            Log.d(TAG, "Startup grace period — ignoring Wi-Fi callback")
+            return
+        }
+
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         var failScore = 0
 

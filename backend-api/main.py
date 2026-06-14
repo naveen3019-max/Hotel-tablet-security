@@ -219,14 +219,21 @@ async def monitor_device_heartbeats():
                     # Only create breach if device was NOT
                     # already in breach status
                     if current_status not in [StatusEnum.breach, StatusEnum.compromised]:
+                        # Create dynamic breach message
+                        rssi_val = device.get("rssi", -127)
+                        if rssi_val <= -120 or rssi_val is None:
+                            breach_msg = f"WiFi disabled on device (RSSI: {rssi_val} dBm)"
+                        else:
+                            breach_msg = f"No heartbeat for {int(seconds_since_heartbeat)}s (RSSI last seen: {rssi_val} dBm)"
+
                         # Create breach alert
                         await alerts_collection.insert_one({
                             "deviceId": device_id,
                             "roomId": device.get("roomId", device.get("room_id", "unknown")),
                             "type": "breach",
                             "severity": "high",
-                            "message": f"No heartbeat for {int(seconds_since_heartbeat)}s",
-                            "rssi": device.get("rssi", -127),
+                            "message": breach_msg,
+                            "rssi": rssi_val,
                             "bssid": device.get("bssid", "unknown"),
                             "ts": now,
                             "acknowledged": False,
@@ -238,10 +245,10 @@ async def monitor_device_heartbeats():
                             "type": "breach",
                             "deviceId": device_id,
                             "roomId": device.get("roomId", device.get("room_id", "unknown")),
-                            "rssi": device.get("rssi", -127),
+                            "rssi": rssi_val,
                             "bssid": device.get("bssid", "unknown"),
                             "source": "heartbeat_timeout",
-                            "message": f"No heartbeat for {int(seconds_since_heartbeat)}s"
+                            "message": breach_msg
                         })
                         
                         # Send mobile notification
