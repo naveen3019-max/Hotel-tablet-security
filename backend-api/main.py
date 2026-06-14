@@ -215,39 +215,43 @@ async def monitor_device_heartbeats():
                         {"$set": {"status": StatusEnum.breach}}
                     )
                     
-                    # Create breach alert
-                    await alerts_collection.insert_one({
-                        "deviceId": device_id,
-                        "roomId": device.get("roomId", device.get("room_id", "unknown")),
-                        "type": "breach",
-                        "severity": "high",
-                        "message": f"No heartbeat for {int(seconds_since_heartbeat)}s",
-                        "rssi": device.get("rssi", -127),
-                        "bssid": device.get("bssid", "unknown"),
-                        "ts": now,
-                        "acknowledged": False,
-                        "source": "heartbeat_timeout"
-                    })
-                    
-                    # Broadcast alert to dashboard
-                    await broadcast_event("alert", {
-                        "type": "breach",
-                        "deviceId": device_id,
-                        "roomId": device.get("roomId", device.get("room_id", "unknown")),
-                        "rssi": device.get("rssi", -127),
-                        "bssid": device.get("bssid", "unknown"),
-                        "source": "heartbeat_timeout",
-                        "message": f"No heartbeat for {int(seconds_since_heartbeat)}s"
-                    })
-                    
-                    # Send mobile notification
-                    asyncio.create_task(
-                        NotificationService.send_breach_alert(
-                            device_id,
-                            device.get("roomId", device.get("room_id", "unknown")),
-                            device.get("rssi", -127)
+                    # Prevent breach spam for same device
+                    # Only create breach if device was NOT
+                    # already in breach status
+                    if current_status not in [StatusEnum.breach, StatusEnum.compromised]:
+                        # Create breach alert
+                        await alerts_collection.insert_one({
+                            "deviceId": device_id,
+                            "roomId": device.get("roomId", device.get("room_id", "unknown")),
+                            "type": "breach",
+                            "severity": "high",
+                            "message": f"No heartbeat for {int(seconds_since_heartbeat)}s",
+                            "rssi": device.get("rssi", -127),
+                            "bssid": device.get("bssid", "unknown"),
+                            "ts": now,
+                            "acknowledged": False,
+                            "source": "heartbeat_timeout"
+                        })
+                        
+                        # Broadcast alert to dashboard
+                        await broadcast_event("alert", {
+                            "type": "breach",
+                            "deviceId": device_id,
+                            "roomId": device.get("roomId", device.get("room_id", "unknown")),
+                            "rssi": device.get("rssi", -127),
+                            "bssid": device.get("bssid", "unknown"),
+                            "source": "heartbeat_timeout",
+                            "message": f"No heartbeat for {int(seconds_since_heartbeat)}s"
+                        })
+                        
+                        # Send mobile notification
+                        asyncio.create_task(
+                            NotificationService.send_breach_alert(
+                                device_id,
+                                device.get("roomId", device.get("room_id", "unknown")),
+                                device.get("rssi", -127)
+                            )
                         )
-                    )
                     
         except Exception as e:
             logger.error(f"Error in heartbeat monitoring: {e}")
@@ -655,6 +659,32 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     
     # Proactive breach detection: Check BSSID/RSSI against room baseline
     new_status = existing_status
+    
+    # ← CRITICAL FIX: Clear breach immediately
+    # when device sends good heartbeat
+    # This handles devices with NO room config
+    # that get stuck in breach forever
+    if existing_status == StatusEnum.breach and \
+       h.rssi > -120 and \
+       h.wifiBssid != "02:00:00:00:00:00":
+        
+        logger.info(
+            f"✅ AUTO BREACH CLEAR: {h.deviceId} "
+            f"sending good heartbeat "
+            f"RSSI:{h.rssi} dBm"
+        )
+        
+        new_status = StatusEnum.ok
+        
+        # Broadcast recovery to dashboard instantly
+        await broadcast_event("device_recovered", {
+            "deviceId": h.deviceId,
+            "roomId": h.roomId,
+            "rssi": h.rssi,
+            "battery": h.battery,
+            "message": "Device WiFi restored - "
+                       "good heartbeat received"
+        })
     
     # Get room configuration to check against
     room = await rooms_collection.find_one({"_id": h.roomId})
