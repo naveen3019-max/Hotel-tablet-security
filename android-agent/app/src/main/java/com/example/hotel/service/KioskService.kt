@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.LayoutInflater
@@ -42,6 +43,7 @@ class KioskService : Service() {
     private var breachOverlayView: View? = null
     private var windowManager: WindowManager? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private lateinit var heartbeatWakeLock: PowerManager.WakeLock
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -55,6 +57,11 @@ class KioskService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        heartbeatWakeLock = pm.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "HotelSecurity::HeartbeatPost"
+        )
         createNotificationChannel()
         
         // Acquire WiFi lock to keep WiFi connected even when screen turns OFF
@@ -450,40 +457,47 @@ class KioskService : Service() {
                 try {
                     Log.v("KioskService", "Heartbeat loop tick starting...")
                     
-                    val rssi = wifiFence.getCurrentRssi() ?: -127
-                    val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
-                    val battery = batteryWatcher.getCurrentLevel()
+                    heartbeatWakeLock.acquire(15_000L)
+                    try {
+                        val rssi = wifiFence.getCurrentRssi() ?: -127
+                        val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
+                        val battery = batteryWatcher.getCurrentLevel()
 
-                    val response = repo.heartbeat(
-                        auth,
-                        HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
-                    )
+                        val response = repo.heartbeat(
+                            auth,
+                            HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
+                        )
 
-                    val status = response["status"] as? String
-                    Log.d("KioskService", "✅ Heartbeat sent: RSSI=$rssi")
- 
-                    // Sync offline queue if heartbeat succeeded
-                    serviceScope.launch {
-                        try {
-                            val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
-                            val syncResult = offlineQueue.syncQueuedAlerts()
-                            if (syncResult.synced > 0) {
-                                Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
+                        val status = response["status"] as? String
+                        Log.d("KioskService", "✅ Heartbeat sent: RSSI=$rssi")
+     
+                        // Sync offline queue if heartbeat succeeded
+                        serviceScope.launch {
+                            try {
+                                val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
+                                val syncResult = offlineQueue.syncQueuedAlerts()
+                                if (syncResult.synced > 0) {
+                                    Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("KioskService", "Offline sync sub-task failed", e)
                             }
-                        } catch (e: Exception) {
-                            Log.e("KioskService", "Offline sync sub-task failed", e)
                         }
-                    }
- 
-                    val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
-                                     status?.equals("COMPROMISED", ignoreCase = true) == true ||
-                                     status?.equals("BREACH", ignoreCase = true) == true
+     
+                        val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
+                                         status?.equals("COMPROMISED", ignoreCase = true) == true ||
+                                         status?.equals("BREACH", ignoreCase = true) == true
 
-                    if (isBadStatus) {
-                         Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
-                         val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
-                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                         startActivity(lockIntent)
+                        if (isBadStatus) {
+                             Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
+                             val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
+                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                             startActivity(lockIntent)
+                        }
+                    } finally {
+                        if (heartbeatWakeLock.isHeld) {
+                            heartbeatWakeLock.release()
+                        }
                     }
                 } catch (e: java.io.IOException) {
                     Log.w("KioskService", "⚠️ Heartbeat network error (will retry): ${e.message}")
@@ -540,6 +554,9 @@ class KioskService : Service() {
     }
 
     override fun onDestroy() {
+        if (::heartbeatWakeLock.isInitialized && heartbeatWakeLock.isHeld) {
+            heartbeatWakeLock.release()
+        }
         super.onDestroy()
         isRunning = false
         serviceJob.cancel()
