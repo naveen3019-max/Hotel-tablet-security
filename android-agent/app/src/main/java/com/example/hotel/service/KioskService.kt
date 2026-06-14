@@ -43,8 +43,10 @@ class KioskService : Service() {
     private var windowManager: WindowManager? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var isRunning = false
+    private var heartbeatJob: Job? = null
 
     companion object {
         const val CHANNEL_ID = "HotelKioskService"
@@ -430,36 +432,39 @@ class KioskService : Service() {
 
         /* ---------------- HEARTBEAT ---------------- */
 
-        serviceScope.launch {
+        startHeartbeatLoop(deviceId, roomId, bssid, auth)
+        startWatchdog(deviceId, roomId, bssid, auth)
+
+    } catch (e: Exception) {
+        Log.e("KioskService", "Fatal error starting monitoring", e)
+    }
+}
+
+    private fun startHeartbeatLoop(deviceId: String, roomId: String, targetBssid: String, auth: String) {
+        heartbeatJob?.cancel()
+        heartbeatJob = serviceScope.launch {
             Log.d("KioskService", "Heartbeat coroutine started")
             val repo = AgentRepository.default(applicationContext).alerts
 
-            while (isRunning) {
+            while (isActive) {
                 try {
                     Log.v("KioskService", "Heartbeat loop tick starting...")
                     
                     val rssi = wifiFence.getCurrentRssi() ?: -127
-                    Log.v("KioskService", "Fetched RSSI: $rssi")
-                    
-                    val bssidActual = wifiFence.getCurrentBssid() ?: "02:00:00:00:00:00"
-                    Log.v("KioskService", "Fetched BSSID: $bssidActual")
-                    
+                    val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
                     val battery = batteryWatcher.getCurrentLevel()
-                    Log.v("KioskService", "Fetched Battery: $battery%")
 
-                    Log.d("KioskService", "Sending heartbeat: deviceId=$deviceId, bssid=$bssidActual, rssi=$rssi, battery=$battery")
                     val response = repo.heartbeat(
                         auth,
                         HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
                     )
 
                     val status = response["status"] as? String
-                    Log.i("KioskService", "Heartbeat successful. Server status: $status")
+                    Log.d("KioskService", "✅ Heartbeat sent: RSSI=$rssi")
  
                     // Sync offline queue if heartbeat succeeded
                     serviceScope.launch {
                         try {
-                            Log.v("KioskService", "Checking offline queue for sync...")
                             val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
                             val syncResult = offlineQueue.syncQueuedAlerts()
                             if (syncResult.synced > 0) {
@@ -480,19 +485,31 @@ class KioskService : Service() {
                              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                          startActivity(lockIntent)
                     }
+                } catch (e: java.io.IOException) {
+                    Log.w("KioskService", "⚠️ Heartbeat network error (will retry): ${e.message}")
+                } catch (e: retrofit2.HttpException) {
+                    Log.w("KioskService", "⚠️ Heartbeat HTTP error ${e.code()} (will retry)")
                 } catch (e: Exception) {
-                    Log.e("KioskService", "Heartbeat failed in loop: ${e.message}", e)
+                    if (e is CancellationException) throw e
+                    Log.e("KioskService", "❌ Heartbeat unexpected error (will retry): ${e.message}")
                 }
 
-                Log.v("KioskService", "Waiting 4s for next heartbeat...")
-                delay(4_000)
+                delay(4_000L)
             }
-            Log.d("KioskService", "Heartbeat loop exited (isRunning=false)")
         }
-    } catch (e: Exception) {
-        Log.e("KioskService", "Fatal error starting monitoring", e)
     }
-}
+
+    private fun startWatchdog(deviceId: String, roomId: String, targetBssid: String, auth: String) {
+        serviceScope.launch {
+            while (isActive) {
+                delay(30_000L)
+                if (heartbeatJob?.isActive != true) {
+                    Log.w("KioskService", "⚠️ Watchdog: heartbeat loop died — restarting")
+                    startHeartbeatLoop(deviceId, roomId, targetBssid, auth)
+                }
+            }
+        }
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -525,7 +542,7 @@ class KioskService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        serviceScope.cancel()
+        serviceJob.cancel()
         wifiFence.stop()
         batteryWatcher.stop()
         
