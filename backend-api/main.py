@@ -185,7 +185,7 @@ async def monitor_device_heartbeats():
     
     # Heartbeat timeout: 35 seconds
     # (devices send heartbeats every 10 seconds. 35s provides a safe buffer for network jitter)
-    OFFLINE_THRESHOLD_SECONDS = 60
+    OFFLINE_THRESHOLD_SECONDS = 90
     
     while True:
         try:
@@ -212,7 +212,17 @@ async def monitor_device_heartbeats():
                 last_seen = device.get("last_seen")
                 
                 # Only trigger breach for devices that were previously OK or offline
-                if current_status in [StatusEnum.ok, StatusEnum.offline]:
+                if current_status == StatusEnum.breach:
+                    last_alert_time = device.get("last_breach_alert_time")
+                    if last_alert_time:
+                        import datetime as dt
+                        if last_alert_time.tzinfo is not None:
+                            last_alert_time = last_alert_time.replace(tzinfo=None)
+                        gap = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - last_alert_time).total_seconds()
+                        if gap < 90:
+                            continue  # skip duplicate alert
+
+                if current_status in [StatusEnum.ok, StatusEnum.offline, StatusEnum.breach]:
                     # Ensure last_seen is timezone-aware for comparison
                     if last_seen and last_seen.tzinfo is None:
                         # MongoDB stores UTC as naive datetime
@@ -279,6 +289,12 @@ async def monitor_device_heartbeats():
                                 device.get("roomId", device.get("room_id", "unknown")),
                                 device.get("rssi", -127)
                             )
+                        )
+                        
+                        import datetime as dt
+                        await devices_collection.update_one(
+                            {"_id": device_id},
+                            {"$set": {"last_breach_alert_time": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)}}
                         )
                     
         except Exception as e:
