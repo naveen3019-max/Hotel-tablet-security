@@ -468,7 +468,7 @@ class KioskService : Service() {
                 try {
                     Log.v("KioskService", "Heartbeat loop tick starting...")
                     
-                    heartbeatWakeLock.acquire(15_000L)
+                    heartbeatWakeLock.acquire(35_000L)
                     try {
                         val rssi = getRssiWithRetry()
                         if (rssi > -120) lastKnownRssi = rssi
@@ -506,21 +506,35 @@ class KioskService : Service() {
                                  .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                              startActivity(lockIntent)
                         }
+                    } catch (e: Exception) {
+                        Log.e("KioskService", "❌ Heartbeat failed: $e")
+                        // ← FIXED: Immediate retry after 2s
+                        delay(2_000L)
+                        try {
+                            heartbeatWakeLock.acquire(35_000L)
+                            val rssi = getRssiWithRetry()
+                            val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
+                            val battery = batteryWatcher.getCurrentLevel()
+                            repo.heartbeat(auth, HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery))
+                            Log.d("KioskService", "✅ Retry heartbeat succeeded")
+                        } catch (e2: Exception) {
+                            Log.e("KioskService", "❌ Retry also failed: $e2")
+                            // Give up this cycle, try next cycle
+                        } finally {
+                            if (heartbeatWakeLock.isHeld)
+                                heartbeatWakeLock.release()
+                        }
                     } finally {
                         if (heartbeatWakeLock.isHeld) {
                             heartbeatWakeLock.release()
                         }
                     }
-                } catch (e: java.io.IOException) {
-                    Log.w("KioskService", "⚠️ Heartbeat network error (will retry): ${e.message}")
-                } catch (e: retrofit2.HttpException) {
-                    Log.w("KioskService", "⚠️ Heartbeat HTTP error ${e.code()} (will retry)")
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
-                    Log.e("KioskService", "❌ Heartbeat unexpected error (will retry): ${e.message}")
+                    Log.e("KioskService", "❌ Heartbeat unexpected error: ${e.message}")
                 }
 
-                delay(4_000L)
+                delay(10_000L)
             }
         }
     }

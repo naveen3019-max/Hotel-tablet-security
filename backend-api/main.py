@@ -49,7 +49,7 @@ async def keepalive_ping():
                 logger.info(f"🏓 Keepalive ping: {r.status_code}")
         except Exception as e:
             logger.warning(f"⚠️ Keepalive ping failed: {e}")
-        await asyncio.sleep(480)  # 8 minutes — under Render's ~10 min timeout
+        await asyncio.sleep(240)  # 4 minutes — prevents Render sleep before 10 min
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -185,7 +185,7 @@ async def monitor_device_heartbeats():
     
     # Heartbeat timeout: 35 seconds
     # (devices send heartbeats every 10 seconds. 35s provides a safe buffer for network jitter)
-    OFFLINE_THRESHOLD_SECONDS = 90
+    OFFLINE_THRESHOLD_SECONDS = 120
     
     while True:
         try:
