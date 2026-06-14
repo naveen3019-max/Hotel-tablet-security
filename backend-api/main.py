@@ -162,13 +162,16 @@ async def monitor_device_heartbeats():
             
             now = get_ist_time()
             
-            # Find all devices that haven't sent a heartbeat recently
-            timeout_threshold = now.timestamp() - OFFLINE_THRESHOLD_SECONDS
+            import datetime as dt
+            utc_now = datetime.now(pytz.utc)
+            utc_threshold = utc_now - dt.timedelta(seconds=OFFLINE_THRESHOLD_SECONDS)
+            # Remove timezone info to match MongoDB naive UTC
+            utc_threshold_naive = utc_threshold.replace(tzinfo=None)
             
             # Query devices with last_seen older than threshold
             cursor = devices_collection.find({
                 "last_seen": {"$exists": True},
-                "last_seen": {"$lt": datetime.fromtimestamp(timeout_threshold, tz=pytz.timezone('Asia/Kolkata'))}
+                "last_seen": {"$lt": utc_threshold_naive}
             })
             
             async for device in cursor:
@@ -180,9 +183,12 @@ async def monitor_device_heartbeats():
                 if current_status in [StatusEnum.ok, StatusEnum.offline]:
                     # Ensure last_seen is timezone-aware for comparison
                     if last_seen and last_seen.tzinfo is None:
-                        # MongoDB stores naive datetimes, assume IST
+                        # MongoDB stores UTC as naive datetime
+                        # MUST localize as UTC first then convert to IST
+                        utc = pytz.timezone('UTC')
+                        last_seen = utc.localize(last_seen)
                         ist = pytz.timezone('Asia/Kolkata')
-                        last_seen = ist.localize(last_seen)
+                        last_seen = last_seen.astimezone(ist)
                     
                     seconds_since_heartbeat = (now - last_seen).total_seconds()
                     
