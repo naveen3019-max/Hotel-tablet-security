@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react"; // ← NEW: added useCallback
+import { useEffect, useState, useCallback, useRef } from "react"; // ← NEW: added useCallback and useRef
 import { useWebSocket } from "../hooks/useWebSocket"; // ← NEW: our WebSocket hook
 import LiveIndicator from "../components/LiveIndicator"; // ← NEW: live status badge
 
@@ -11,7 +11,7 @@ const formatISTTime = (dateString: string): string => {
   try {
     const match = dateString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
     if (!match) return dateString;
-    const [_, year, month, day, hour24, minute, second] = match;
+    const [, year, month, day, hour24, minute, second] = match;
     let hour = parseInt(hour24);
     const ampm = hour >= 12 ? "PM" : "AM";
     hour = hour % 12 || 12;
@@ -62,22 +62,19 @@ export default function EnhancedDashboard() {
 
   // ← NEW: Toast queue for breach notifications
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [toastCounter, setToastCounter] = useState(0);
+  const toastIdCounter = useRef(0);
 
   // ← NEW: Connect WebSocket hook — this drives all live updates
-  const { lastMessage, connectionStatus } = useWebSocket(API);
+  const { lastMessage, status: connectionStatus } = useWebSocket(API);
 
   // ← NEW: Helper to add a breach toast and auto-dismiss it after 8 seconds
   const addToast = useCallback((deviceId: string, roomId?: string, reason?: string) => {
-    setToastCounter((c: number) => {
-      const id = c + 1;
-      setToasts((prev: Toast[]) => [...prev, { id, deviceId, roomId, reason }]);
-      // ← NEW: Auto-remove toast after 8 seconds
-      setTimeout(() => {
-        setToasts((prev: Toast[]) => prev.filter((t: Toast) => t.id !== id));
-      }, 8000);
-      return id;
-    });
+    const id = ++toastIdCounter.current;
+    setToasts((prev: Toast[]) => [...prev, { id, deviceId, roomId, reason }]);
+    // ← NEW: Auto-remove toast after 8 seconds
+    setTimeout(() => {
+      setToasts((prev: Toast[]) => prev.filter((t: Toast) => t.id !== id));
+    }, 8000);
   }, []);
 
   // ← NEW: React to every WebSocket message the server pushes
@@ -87,104 +84,108 @@ export default function EnhancedDashboard() {
     const { type, data } = lastMessage;
     const d = data as Record<string, unknown> | undefined;
 
-    switch (type) {
-      case "device_update": {
-        // ← NEW: Update single device in-place without re-fetching all devices
-        if (!d?.deviceId) break;
-        setDevices((prev: Device[]) => {
-          const idx = prev.findIndex((dev: Device) => dev.deviceId === d.deviceId);
-          const updated: Device = {
-            ...(idx >= 0 ? prev[idx] : { deviceId: d.deviceId as string }),
-            status: (d.status as string) ?? prev[idx]?.status,
-            battery: d.battery !== undefined ? (d.battery as number) : prev[idx]?.battery,
-            rssi: d.rssi !== undefined ? (d.rssi as number) : prev[idx]?.rssi,
-            lastSeen: (d.lastSeen as string) ?? prev[idx]?.lastSeen,
+    setTimeout(() => {
+      switch (type) {
+        case "device_update": {
+          // ← NEW: Update single device in-place without re-fetching all devices
+          if (!d?.deviceId) break;
+          setDevices((prev: Device[]) => {
+            const idx = prev.findIndex((dev: Device) => dev.deviceId === d.deviceId);
+            const updated: Device = {
+              ...(idx >= 0 ? prev[idx] : { deviceId: d.deviceId as string }),
+              status: (d.status as string) ?? prev[idx]?.status,
+              battery: d.battery !== undefined ? (d.battery as number) : prev[idx]?.battery,
+              rssi: d.rssi !== undefined ? (d.rssi as number) : prev[idx]?.rssi,
+              lastSeen: (d.lastSeen as string) ?? prev[idx]?.lastSeen,
+            };
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = updated;
+              return copy;
+            }
+            return [...prev, updated];
+          });
+          break;
+        }
+
+        case "alert": {
+          // ← NEW: Prepend the incoming alert to the list — no fetch needed
+          if (!d?.type) break;
+          const newAlert: Alert = {
+            type: d.type as string,
+            deviceId: d.deviceId as string,
+            roomId: d.roomId as string | undefined,
+            ts: (lastMessage.timestamp as string | undefined) ?? new Date().toISOString(),
+            acknowledged: false,
+            message: d.message as string | undefined,
           };
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy[idx] = updated;
-            return copy;
+          setAlerts((prev: Alert[]) => [newAlert, ...prev].slice(0, 100));
+
+          // ← NEW: Show red toast notification for breach events
+          if (d.type === "breach") {
+            addToast(d.deviceId as string, d.roomId as string | undefined, d.message as string | undefined);
+
+            // ← NEW: Mark the device as breached instantly in the device grid
+            setDevices((prev: Device[]) =>
+              prev.map((dev: Device) =>
+                dev.deviceId === d.deviceId ? { ...dev, status: "breach" } : dev
+              )
+            );
           }
-          return [...prev, updated];
-        });
-        break;
-      }
+          break;
+        }
 
-      case "alert": {
-        // ← NEW: Prepend the incoming alert to the list — no fetch needed
-        if (!d?.type) break;
-        const newAlert: Alert = {
-          type: d.type as string,
-          deviceId: d.deviceId as string,
-          roomId: d.roomId as string | undefined,
-          ts: lastMessage.timestamp ?? new Date().toISOString(),
-          acknowledged: false,
-          message: d.message as string | undefined,
-        };
-        setAlerts((prev: Alert[]) => [newAlert, ...prev].slice(0, 100));
-
-        // ← NEW: Show red toast notification for breach events
-        if (d.type === "breach") {
-          addToast(d.deviceId as string, d.roomId as string | undefined, d.message as string | undefined);
-
-          // ← NEW: Mark the device as breached instantly in the device grid
+        case "device_recovered": {
+          // ← NEW: Clear breach state when device comes back online
+          if (!d?.deviceId) break;
           setDevices((prev: Device[]) =>
             prev.map((dev: Device) =>
-              dev.deviceId === d.deviceId ? { ...dev, status: "breach" } : dev
+              dev.deviceId === d.deviceId ? { ...dev, status: "ok" } : dev
             )
           );
+          break;
         }
-        break;
-      }
 
-      case "device_recovered": {
-        // ← NEW: Clear breach state when device comes back online
-        if (!d?.deviceId) break;
-        setDevices((prev: Device[]) =>
-          prev.map((dev: Device) =>
-            dev.deviceId === d.deviceId ? { ...dev, status: "ok" } : dev
-          )
-        );
-        break;
-      }
-
-      case "device_offline":
-      case "device_deleted": {
-        // ← NEW: Remove or mark offline the device that disconnected
-        if (!d?.deviceId) break;
-        if (type === "device_deleted") {
-          setDevices((prev: Device[]) => prev.filter((dev: Device) => dev.deviceId !== d.deviceId));
-        } else {
-          setDevices((prev: Device[]) =>
-            prev.map((dev: Device) =>
-              dev.deviceId === d.deviceId ? { ...dev, status: "offline" } : dev
-            )
-          );
+        case "device_offline":
+        case "device_deleted": {
+          // ← NEW: Remove or mark offline the device that disconnected
+          if (!d?.deviceId) break;
+          if (type === "device_deleted") {
+            setDevices((prev: Device[]) => prev.filter((dev: Device) => dev.deviceId !== d.deviceId));
+          } else {
+            setDevices((prev: Device[]) =>
+              prev.map((dev: Device) =>
+                dev.deviceId === d.deviceId ? { ...dev, status: "offline" } : dev
+              )
+            );
+          }
+          break;
         }
-        break;
-      }
 
-      case "database_cleared": {
-        // ← NEW: Wipe the UI when an admin clears the database
-        setDevices([]);
-        setAlerts([]);
-        break;
+        case "database_cleared": {
+          // ← NEW: Wipe the UI when an admin clears the database
+          setDevices([]);
+          setAlerts([]);
+          break;
+        }
       }
-    }
+    }, 0);
   }, [lastMessage, addToast]);
 
   // ── Initial data load + polling fallback ──────────────────────────────────
   // ← NEW: Fetch initial data once on mount so the dashboard isn't blank
   useEffect(() => {
     if (!API) {
-      setError("API URL not configured");
-      setIsLoading(false);
+      setTimeout(() => {
+        setError("API URL not configured");
+        setIsLoading(false);
+      }, 0);
       return;
     }
 
     const fetchAll = async () => {
       try {
-        setError(null);
+        setTimeout(() => setError(null), 0);
         const [devicesRes, alertsRes] = await Promise.all([
           fetch(`${API}/api/devices`),
           fetch(`${API}/api/alerts/recent?limit=100`),

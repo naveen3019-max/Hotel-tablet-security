@@ -19,14 +19,41 @@ export default function DashboardPage() {
   const { status, lastMessage, isPollingMode } = useWebSocket(wsUrl);
 
   useEffect(() => {
-    if (lastMessage && lastMessage.type === 'breach') {
-      const ts = new Date(lastMessage.data.timestamp).getTime();
-      if (ts > lastAlertTimestamp.current) lastAlertTimestamp.current = ts;
-      
-      setAlerts(prev => {
-        if (prev.some(a => a.id === lastMessage.data.id)) return prev;
-        return [lastMessage.data, ...prev].slice(0, 50);
-      });
+    const d = lastMessage?.data as Record<string, unknown> | undefined;
+
+    // ← FIXED: Added console log for debugging as requested in FIX 6
+    console.log('[Dashboard] WS message received:', lastMessage?.type, d?.type);
+
+    // ← FIXED: Changed condition to handle all possible message formats (FIX 1)
+    if (lastMessage && (
+        lastMessage.type === 'breach' ||
+        (lastMessage.type === 'alert' && d?.type === 'breach') ||
+        (lastMessage.type === 'device_update' && d?.status === 'breach')
+    )) {
+      setTimeout(() => {
+        // ← FIXED: Ensure we extract timestamp safely from either root or data
+        const tsStr = (lastMessage.timestamp as string | undefined) || (d?.timestamp as string | undefined) || new Date().toISOString();
+        const ts = new Date(tsStr).getTime();
+        
+        if (ts > lastAlertTimestamp.current) lastAlertTimestamp.current = ts;
+        
+        setAlerts(prev => {
+          // ← FIXED: Extract deviceId robustly handling all naming conventions
+          const deviceId = (d?.deviceId as string | undefined) || (lastMessage.deviceId as string | undefined) || (d?.device_id as string | undefined) || 'Unknown';
+          
+          // ← FIXED: Map the backend payload to the expected Alert interface exactly
+          const newAlert: Alert = {
+            id: (d?.id as string | undefined) || `${deviceId}-${ts}`,
+            deviceId: deviceId,
+            status: 'breach', // ← FIXED: explicitly set status to 'breach' so UI turns RED
+            timestamp: tsStr,
+            reason: (d?.message as string | undefined) || 'WiFi breach detected'
+          };
+
+          if (prev.some(a => a.id === newAlert.id)) return prev;
+          return [newAlert, ...prev].slice(0, 50);
+        });
+      }, 0);
     }
   }, [lastMessage]);
 
@@ -55,7 +82,7 @@ export default function DashboardPage() {
           });
           if (injected && isPollingMode) console.log("God Mode: Polling caught missed breach.");
         }
-      } catch (e) {
+      } catch {
         // silent catch
       }
     };
