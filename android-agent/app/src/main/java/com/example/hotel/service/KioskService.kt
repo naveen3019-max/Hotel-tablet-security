@@ -10,6 +10,8 @@ import android.content.IntentFilter
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
+import android.app.AlarmManager
+import android.os.SystemClock
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -53,6 +55,12 @@ class KioskService : Service() {
     companion object {
         const val CHANNEL_ID = "HotelKioskService"
         const val NOTIFICATION_ID = 1
+        const val ACTION_HEARTBEAT = "com.hotel.security.ACTION_HEARTBEAT"
+        const val HEARTBEAT_INTERVAL_MS = 10_000L
+    }
+
+    private val alarmManager by lazy {
+        getSystemService(Context.ALARM_SERVICE) as AlarmManager
     }
 
     override fun onCreate() {
@@ -82,6 +90,87 @@ class KioskService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_HEARTBEAT) {
+            // Alarm fired — send heartbeat then schedule next
+            serviceScope.launch {
+                try {
+                    heartbeatWakeLock.acquire(35_000L)
+                    try {
+                        val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
+                        val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
+                        val roomId = prefs.getString("room_id", "UNKNOWN")!!
+                        val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
+                        val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" }
+                        if (auth == null) return@launch
+
+                        val repo = AgentRepository.default(applicationContext).alerts
+                        val rssi = getRssiWithRetry()
+                        val bssidActual = wifiFence.getCurrentBssid() ?: bssid
+                        val battery = batteryWatcher.getCurrentLevel()
+                        
+                        val response = repo.heartbeat(
+                            auth,
+                            HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
+                        )
+                        
+                        if (rssi > -120) lastKnownRssi = rssi
+                        Log.d("KioskService", "✅ Heartbeat OK RSSI=$rssi")
+                        
+                        // Sync offline queue if heartbeat succeeded
+                        try {
+                            val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
+                            val syncResult = offlineQueue.syncQueuedAlerts()
+                            if (syncResult.synced > 0) {
+                                Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("KioskService", "Offline sync sub-task failed", e)
+                        }
+
+                        val status = response["status"] as? String
+                        val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
+                                         status?.equals("COMPROMISED", ignoreCase = true) == true ||
+                                         status?.equals("BREACH", ignoreCase = true) == true
+
+                        if (isBadStatus) {
+                             Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
+                             val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
+                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                             startActivity(lockIntent)
+                        }
+                    } catch (e: java.io.IOException) {
+                        Log.w("KioskService", "⚠️ Heartbeat network failed (Render slow?): ${e.message}")
+                        // Retry once after 2s — alarm will handle next full cycle
+                        delay(2_000L)
+                        try {
+                            val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
+                            val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
+                            val roomId = prefs.getString("room_id", "UNKNOWN")!!
+                            val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
+                            val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" } ?: return@launch
+                            val repo = AgentRepository.default(applicationContext).alerts
+                            
+                            val bssidActual = wifiFence.getCurrentBssid() ?: bssid
+                            repo.heartbeat(auth, HeartbeatRequest(deviceId, roomId, bssidActual, lastKnownRssi, batteryWatcher.getCurrentLevel()))
+                            Log.d("KioskService", "✅ Retry succeeded")
+                        } catch (e2: Exception) {
+                            Log.e("KioskService", "❌ Retry also failed: ${e2.message}")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("KioskService", "❌ Heartbeat failed: ${e.message}")
+                    } finally {
+                        if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
+                    }
+                } catch (e: Exception) {
+                    Log.e("KioskService", "❌ Heartbeat outer error: ${e.message}")
+                    if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
+                }
+                // Schedule next alarm AFTER heartbeat attempt completes
+                scheduleNextHeartbeat()
+            }
+            return START_NOT_STICKY
+        }
+
         Log.e("KioskService", "")
         Log.e("KioskService", "═══════════════════════════════════════════════")
         Log.e("KioskService", "🚀 KIOSK SERVICE STARTING - v2.5.0")
@@ -90,14 +179,10 @@ class KioskService : Service() {
         
         if (!isRunning) {
             isRunning = true
-            
-            // WiFi PIN protection disabled
-            // startWifiPinProtection()
-            
-            // Start monitoring (requires provisioning)
             startMonitoring()
+            scheduleNextHeartbeat() // First alarm fires in 10s
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
     
     /**
@@ -439,7 +524,6 @@ class KioskService : Service() {
 
         /* ---------------- HEARTBEAT ---------------- */
 
-        startHeartbeatLoop(deviceId, roomId, bssid, auth)
         startWatchdog(deviceId, roomId, bssid, auth)
 
     } catch (e: Exception) {
@@ -458,95 +542,31 @@ class KioskService : Service() {
         return lastKnownRssi
     }
 
-    private fun startHeartbeatLoop(deviceId: String, roomId: String, targetBssid: String, auth: String) {
-        heartbeatJob?.cancel()
-        heartbeatJob = serviceScope.launch {
-            Log.d("KioskService", "Heartbeat coroutine started")
-            val repo = AgentRepository.default(applicationContext).alerts
-
-            while (isActive) {
-                try {
-                    Log.v("KioskService", "Heartbeat loop tick starting...")
-                    
-                    heartbeatWakeLock.acquire(35_000L)
-                    try {
-                        val rssi = getRssiWithRetry()
-                        if (rssi > -120) lastKnownRssi = rssi
-                        val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
-                        val battery = batteryWatcher.getCurrentLevel()
-
-                        val response = repo.heartbeat(
-                            auth,
-                            HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
-                        )
-
-                        val status = response["status"] as? String
-                        Log.d("KioskService", "✅ Heartbeat sent: RSSI=$rssi")
-     
-                        // Sync offline queue if heartbeat succeeded
-                        serviceScope.launch {
-                            try {
-                                val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
-                                val syncResult = offlineQueue.syncQueuedAlerts()
-                                if (syncResult.synced > 0) {
-                                    Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
-                                }
-                            } catch (e: Exception) {
-                                Log.e("KioskService", "Offline sync sub-task failed", e)
-                            }
-                        }
-     
-                        val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
-                                         status?.equals("COMPROMISED", ignoreCase = true) == true ||
-                                         status?.equals("BREACH", ignoreCase = true) == true
-
-                        if (isBadStatus) {
-                             Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
-                             val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
-                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                             startActivity(lockIntent)
-                        }
-                    } catch (e: Exception) {
-                        Log.e("KioskService", "❌ Heartbeat failed: $e")
-                        // ← FIXED: Immediate retry after 2s
-                        delay(2_000L)
-                        try {
-                            heartbeatWakeLock.acquire(35_000L)
-                            val rssi = getRssiWithRetry()
-                            val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
-                            val battery = batteryWatcher.getCurrentLevel()
-                            repo.heartbeat(auth, HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery))
-                            Log.d("KioskService", "✅ Retry heartbeat succeeded")
-                        } catch (e2: Exception) {
-                            Log.e("KioskService", "❌ Retry also failed: $e2")
-                            // Give up this cycle, try next cycle
-                        } finally {
-                            if (heartbeatWakeLock.isHeld)
-                                heartbeatWakeLock.release()
-                        }
-                    } finally {
-                        if (heartbeatWakeLock.isHeld) {
-                            heartbeatWakeLock.release()
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    Log.e("KioskService", "❌ Heartbeat unexpected error: ${e.message}")
-                }
-
-                delay(10_000L)
-            }
+    // Call this once on first start AND after each heartbeat
+    private fun scheduleNextHeartbeat() {
+        val intent = Intent(this, KioskService::class.java).apply {
+            action = ACTION_HEARTBEAT
         }
+        val pendingIntent = PendingIntent.getService(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        // setExactAndAllowWhileIdle: fires even during Doze
+        // ELAPSED_REALTIME_WAKEUP: wakes CPU if asleep
+        alarmManager.setExactAndAllowWhileIdle(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS,
+            pendingIntent
+        )
     }
 
     private fun startWatchdog(deviceId: String, roomId: String, targetBssid: String, auth: String) {
         serviceScope.launch {
             while (isActive) {
                 delay(30_000L)
-                if (heartbeatJob?.isActive != true) {
-                    Log.w("KioskService", "⚠️ Watchdog: heartbeat loop died — restarting")
-                    startHeartbeatLoop(deviceId, roomId, targetBssid, auth)
-                }
+                // Re-schedule alarm as safety net in case it was cancelled
+                scheduleNextHeartbeat()
+                Log.d("KioskService", "🐕 Watchdog: alarm rescheduled")
             }
         }
     }

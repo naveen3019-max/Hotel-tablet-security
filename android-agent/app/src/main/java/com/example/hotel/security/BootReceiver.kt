@@ -69,7 +69,7 @@ class BootReceiver : BroadcastReceiver() {
 
         Log.i(TAG, "Device is provisioned — starting WiFiMonitoringService")
 
-        val serviceIntent = Intent(context, WiFiMonitoringService::class.java)
+        val serviceIntent = Intent(context, com.example.hotel.service.KioskService::class.java)
 
         // startForegroundService() is required on API 26+ (minSdk 29).
         // WiFiMonitoringService.onCreate() calls startForeground() within 5 s.
@@ -79,6 +79,6 @@ class BootReceiver : BroadcastReceiver() {
             context.startService(serviceIntent)
         }
 
-        Log.i(TAG, "✅ WiFiMonitoringService started after boot")
+        Log.i(TAG, "✅ KioskService started after boot")
     }
 }
