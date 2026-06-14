@@ -598,13 +598,12 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     
     logger.info(f"💓 HEARTBEAT: {h.deviceId} | Room: {h.roomId} | RSSI: {h.rssi} dBm | BSSID: {h.wifiBssid[:17]}")
     
-    # ← FIXED: RSSI -127 = WiFi physically OFF
-    # BSSID 02:00:00:00:00:00 = Android dummy
+    # Android 10+ always sends BSSID 02:00:00:00:00:00 due to MAC randomization
+    # BSSID is NOT a reliable WiFi indicator on Android 10+
+    # Use RSSI only: -127 means WiFi radio is OFF, anything above means connected
     WIFI_OFF_RSSI = -120
-    DUMMY_BSSID = "02:00:00:00:00:00"
 
-    if h.rssi <= WIFI_OFF_RSSI or \
-       h.wifiBssid == DUMMY_BSSID:
+    if h.rssi <= WIFI_OFF_RSSI:
         
         logger.warning(
             f"🚨 WiFi OFF heartbeat: "
