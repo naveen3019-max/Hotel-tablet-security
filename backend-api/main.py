@@ -177,6 +177,7 @@ redis_client = None
 
 # Background monitoring task
 monitoring_task = None
+keepalive_task = None
 
 async def monitor_device_heartbeats():
     """Background task to detect devices that stop sending heartbeats (WiFi OFF)"""
