@@ -153,7 +153,7 @@ async def monitor_device_heartbeats():
     
     # Heartbeat timeout: 35 seconds
     # (devices send heartbeats every 10 seconds. 35s provides a safe buffer for network jitter)
-    HEARTBEAT_TIMEOUT_SECONDS = 35
+    OFFLINE_THRESHOLD_SECONDS = 35
     
     while True:
         try:
@@ -163,7 +163,7 @@ async def monitor_device_heartbeats():
             now = get_ist_time()
             
             # Find all devices that haven't sent a heartbeat recently
-            timeout_threshold = now.timestamp() - HEARTBEAT_TIMEOUT_SECONDS
+            timeout_threshold = now.timestamp() - OFFLINE_THRESHOLD_SECONDS
             
             # Query devices with last_seen older than threshold
             cursor = devices_collection.find({
@@ -186,8 +186,11 @@ async def monitor_device_heartbeats():
                     
                     seconds_since_heartbeat = (now - last_seen).total_seconds()
                     
-                    logger.warning(f"🚨 HEARTBEAT TIMEOUT: Device {device_id} - Last seen {int(seconds_since_heartbeat)}s ago (threshold: {HEARTBEAT_TIMEOUT_SECONDS}s)")
+                    logger.warning(f"🚨 HEARTBEAT TIMEOUT: Device {device_id} - Last seen {int(seconds_since_heartbeat)}s ago (threshold: {OFFLINE_THRESHOLD_SECONDS}s)")
                     print(f"🚨 HEARTBEAT TIMEOUT: {device_id} - WiFi likely OFF (no heartbeat for {int(seconds_since_heartbeat)}s)", flush=True)
+                    
+                    # LOG LINE REQUIRED BY PROMPT:
+                    logger.error(f"OFFLINE CHECKER FIRED: Device={device_id}, Stored last_seen={last_seen.isoformat()}, Current time={now.isoformat()}, Gap={int(seconds_since_heartbeat)}s")
                     
                     # Mark device as breach
                     await devices_collection.update_one(
@@ -677,11 +680,15 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     if h.battery is not None:
         update_data["battery"] = h.battery
     
-    await devices_collection.update_one(
-        {"_id": h.deviceId},
-        {"$set": update_data},
-        upsert=True
-    )
+    try:
+        result = await devices_collection.update_one(
+            {"_id": h.deviceId},
+            {"$set": update_data},
+            upsert=True
+        )
+        logger.info(f"Heartbeat DB write: matched={result.matched_count}, modified={result.modified_count}, upserted={result.upserted_id}")
+    except Exception as e:
+        logger.error(f"❌ MongoDB write failed in heartbeat for {h.deviceId}: {e}")
     
     # Broadcast device update
     await broadcast_event("device_update", {
