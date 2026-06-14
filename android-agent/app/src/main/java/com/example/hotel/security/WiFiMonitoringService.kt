@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo           // ← NEW: needed for FOREGROUND_SERVICE_TYPE_DATA_SYNC constant
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -16,6 +17,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat          // ← NEW: back-compat startForeground wrapper (from androidx.core:core-ktx)
 
 class WiFiMonitoringService : Service() {
 
@@ -79,19 +81,33 @@ class WiFiMonitoringService : Service() {
 
     private fun applyManufacturerFix() {
         val manufacturer = Build.MANUFACTURER.lowercase()
-        when {
+        val priority = when {
             manufacturer.contains("samsung") -> {
                 Log.d(TAG, "God Mode: Samsung One UI bypass active")
-                startForeground(NOTIFICATION_ID, buildNotification(NotificationCompat.PRIORITY_MAX)) 
+                NotificationCompat.PRIORITY_MAX
             }
             manufacturer.contains("lenovo") -> {
                 Log.d(TAG, "God Mode: Lenovo background bypass active")
-                startForeground(NOTIFICATION_ID, buildNotification(NotificationCompat.PRIORITY_HIGH))
+                NotificationCompat.PRIORITY_HIGH
             }
-            else -> {
-                startForeground(NOTIFICATION_ID, buildNotification(NotificationCompat.PRIORITY_DEFAULT))
-            }
+            else -> NotificationCompat.PRIORITY_DEFAULT
         }
+
+        val notification = buildNotification(priority)
+
+        // ← NEW: On API 29+ we must declare the foreground service TYPE so Android knows
+        // this service is doing data synchronisation (sending heartbeats to the backend).
+        // Using ServiceCompat.startForeground() handles the API-level check for us:
+        // on API 29-33 it falls back to the two-arg startForeground(); on 34+ it passes
+        // the type flag which is now mandatory.
+        // FOREGROUND_SERVICE_TYPE_DATA_SYNC maps to the 'dataSync' type declared in
+        // AndroidManifest.xml and requires FOREGROUND_SERVICE_DATA_SYNC permission.
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -153,13 +169,28 @@ class WiFiMonitoringService : Service() {
     }
 
     private fun acquireLocksSafely() {
-        if (wakeLock == null || wakeLock?.isHeld == false) { // ← FIXED BUG 3: Null check FIRST to prevent NPE
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HotelSecurity:GodModeWakeLock")
-            wakeLock?.acquire() 
+        // ← PARTIAL_WAKE_LOCK keeps the CPU running even when the screen is off.
+        // No timeout is set because these are dedicated, always-on hotel tablets —
+        // battery drain is not a concern and indefinite uptime is required.
+        if (wakeLock == null || wakeLock?.isHeld == false) {
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "HotelSecurity:GodModeWakeLock"
+            )
+            wakeLock?.setReferenceCounted(false) // ← NEW: prevent double-release crashes if acquire() is called twice
+            wakeLock?.acquire()                  // ← No timeout — intentional for always-on dedicated hardware
+            Log.d(TAG, "WakeLock acquired")
         }
-        if (wifiLock == null || wifiLock?.isHeld == false) { // ← FIXED BUG 3: Null check FIRST to prevent NPE
-            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HotelSecurity:GodModeWifiLock")
-            wifiLock?.acquire() 
+        if (wifiLock == null || wifiLock?.isHeld == false) {
+            // WIFI_MODE_FULL_HIGH_PERF keeps Wi-Fi radio at full power (no scan throttling).
+            // Required so RSSI readings remain accurate when the screen is off.
+            wifiLock = wifiManager.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "HotelSecurity:GodModeWifiLock"
+            )
+            wifiLock?.setReferenceCounted(false) // ← NEW: mirrors wakeLock safety measure
+            wifiLock?.acquire()
+            Log.d(TAG, "WifiLock acquired")
         }
     }
 

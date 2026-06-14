@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager              // ← NEW: needed for isIgnoringBatteryOptimizations()
 import android.provider.Settings
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -46,6 +47,11 @@ class ProvisioningActivity : AppCompatActivity() {
                 Toast.makeText(this, "Please enable 'Display over other apps' permission", Toast.LENGTH_LONG).show()
             }
         }
+
+        // ← NEW: Ask the user to exempt this app from Doze battery optimisations.
+        // Hotel tablets run 24/7 — Doze mode would throttle heartbeats after ~2 minutes
+        // of screen-off time, causing false BREACH/OFFLINE alerts on the dashboard.
+        requestBatteryOptimizationExemption()
         
         // Check if already provisioned
         val prefs = getSharedPreferences("agent", MODE_PRIVATE)
@@ -142,6 +148,54 @@ class ProvisioningActivity : AppCompatActivity() {
         val randomId = "TAB-${UUID.randomUUID().toString().substring(0, 8).uppercase()}"
         deviceIdInput.setText(randomId)
         Toast.makeText(this, "Generated ID: $randomId", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Requests that Android stop applying Doze-mode battery optimisations to this app.
+     *
+     * Why this is necessary:
+     * Doze mode (introduced in API 23) aggressively throttles background work once
+     * the screen has been off for ~2 minutes. On dedicated hotel tablets the screen
+     * is always off; without this exemption the 30-second heartbeat loop in
+     * WiFiMonitoringService will stall, and the dashboard will emit false BREACH or
+     * OFFLINE alerts within minutes of the screen turning off.
+     *
+     * Security note: This permission is declared in AndroidManifest.xml with
+     * REQUEST_IGNORE_BATTERY_OPTIMIZATIONS. Google Play policies restrict this to
+     * specific use cases; for a sideloaded enterprise/hotel app this is acceptable.
+     *
+     * Call site: invoked once during first-time provisioning setup so that the
+     * user/admin can approve the system dialog before the monitoring service starts.
+     */
+    private fun requestBatteryOptimizationExemption() {
+        // Only needed on API 23+ (Marshmallow) where Doze mode was introduced.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+        // isIgnoringBatteryOptimizations() returns true if the user has already
+        // granted the exemption in a previous session — skip the dialog in that case.
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            android.util.Log.d("Provisioning", "✅ Battery optimisations already disabled — skipping dialog")
+            return
+        }
+
+        android.util.Log.d("Provisioning", "🔋 Requesting battery optimisation exemption...")
+
+        // ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS opens a system dialog that asks
+        // the user to exempt this package. The package URI is mandatory; without it
+        // the intent is rejected on most OEM ROMs.
+        val intent = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:$packageName")
+        )
+        startActivity(intent)
+
+        Toast.makeText(
+            this,
+            "🔋 Battery optimisation exemption required.\nTap 'Allow' to prevent false security alerts.",
+            Toast.LENGTH_LONG
+        ).show()
     }
     
     private fun registerDevice() {
