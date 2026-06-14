@@ -51,7 +51,7 @@ class SixSignalMonitor(private val context: Context) {
         Log.i(TAG, "God Mode: SixSignalMonitor stopped")
     }
 
-    fun forceImmediateCheck() {
+    fun forceImmediateCheck(skipDelay: Boolean = false) {
         if (!isRunning) return
         try {
             val now = SystemClock.elapsedRealtime()
@@ -61,7 +61,7 @@ class SixSignalMonitor(private val context: Context) {
             }
 
             lastCheckTime = now
-            performSecurityCheck()
+            performSecurityCheck(skipConfirmationDelay = skipDelay)
         } catch (e: Exception) {
             Log.e(TAG, "Error in God Mode monitoring loop", e)
         }
@@ -152,7 +152,7 @@ class SixSignalMonitor(private val context: Context) {
     }
 
     // ← FIXED BUG 1: Complete rewrite of security check with proper threshold
-    private fun performSecurityCheck() {
+    private fun performSecurityCheck(skipConfirmationDelay: Boolean = false) {
         if (isStartupGracePeriod) {
             Log.d(TAG, "Startup grace period — ignoring Wi-Fi callback")
             return
@@ -200,6 +200,14 @@ class SixSignalMonitor(private val context: Context) {
         val now = SystemClock.elapsedRealtime()
 
         if (failScore >= 3) {
+            if (skipConfirmationDelay) {
+                // WIFI_STATE_DISABLING = hardware confirmation, no delay needed
+                // Radio still active for ~1-2s — fire POST immediately
+                Log.d(TAG, "⚡ IMMEDIATE breach — DISABLING state, skipping 8s delay")
+                triggerBreach("⚡ IMMEDIATE breach — DISABLING state", actualRssi)
+                return
+            }
+
             // Validate RSSI: if signal is actually fine, ignore the screen-off blip
             if (actualRssi > -100 && wifiManager.isWifiEnabled) {
                 Log.w(TAG, "Ignoring false breach: RSSI is $actualRssi dBm (fine). Likely screen-off blip.")

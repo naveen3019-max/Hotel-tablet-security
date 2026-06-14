@@ -71,9 +71,9 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                                 breachAlreadySent = true
                                 Log.e(TAG, "🚨 WiFi DISABLING — instant breach!")
 
-                                // ← FIXED: Start service with WIFI_OFF_BREACH action for immediate check
                                 val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
                                     action = "WIFI_OFF_BREACH"
+                                    putExtra("IMMEDIATE_BREACH", true) // ← ADD THIS
                                 }
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     context.startForegroundService(serviceIntent)
@@ -96,6 +96,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
 
                                 val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
                                     action = "WIFI_OFF_BREACH"
+                                    putExtra("IMMEDIATE_BREACH", false)
                                 }
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     context.startForegroundService(serviceIntent)

@@ -169,7 +169,8 @@ class WiFiMonitoringService : Service() {
                 // ── Instant breach from ScreenAndWiFiReceiver ──
                 Log.e(TAG, "🚨 WiFi OFF broadcast received — forcing immediate breach check")
                 acquireTimedWakeLock()
-                sixSignalMonitor.forceImmediateCheck()
+                val isImmediate = intent.getBooleanExtra("IMMEDIATE_BREACH", false)
+                sixSignalMonitor.forceImmediateCheck(skipDelay = isImmediate)
                 scheduleNextAlarm()
             }
 
