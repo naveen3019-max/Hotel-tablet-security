@@ -107,7 +107,10 @@ class WiFiMonitoringService : Service() {
             }
         }
 
-        fun onNetworkLost() = triggerBreachAlert("Network Connectivity Lost")
+        fun onNetworkLost() {
+            Log.e(TAG, "Network Connectivity Lost — routing through 15s validation")
+            instance?.sixSignalMonitor?.forceImmediateCheck()
+        }
 
         fun reAcquireWakeLock() {
             // Called from ScreenAndWiFiReceiver when screen turns off — ensures the

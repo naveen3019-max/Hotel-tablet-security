@@ -20,6 +20,7 @@ class SixSignalMonitor(private val context: Context) {
     private var isRunning = false
     private var lastCheckTime = 0L
     private var lastBreachSentTime = 0L // Cooldown tracker to prevent backend spam
+    private var firstWifiLossTime = 0L // Tracks when Wi-Fi loss was first detected
 
     companion object {
         private const val TAG = "SixSignalMonitor"
@@ -72,21 +73,32 @@ class SixSignalMonitor(private val context: Context) {
             Log.w(TAG, "Breach cooldown active. Skipping POST for: $reason")
             return
         }
-        lastBreachSentTime = now
 
         // ← FIXED: Read config from SharedPreferences
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val backendUrl = prefs.getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: "https://hotel-tablet-security.onrender.com"
         val deviceToken = prefs.getString("device_token", "") ?: ""
-        val deviceId = prefs.getString("device_id", "UNKNOWN") ?: "UNKNOWN"
-        val roomId = prefs.getString("room_id", "UNKNOWN") ?: "UNKNOWN"
+        val deviceId = prefs.getString("device_id", "") ?: ""
+        val roomId = prefs.getString("room_id", "") ?: ""
+
+        // Validate deviceId and roomId are non-empty
+        if (deviceId.isEmpty() || roomId.isEmpty() || deviceId == "UNKNOWN" || roomId == "UNKNOWN") {
+            Log.e(TAG, "❌ Cannot send breach: deviceId or roomId is null/empty!")
+            return
+        }
 
         if (deviceToken.isEmpty()) {
             Log.e(TAG, "❌ Cannot send breach: device_token is empty in SharedPreferences!")
             return
         }
 
-        Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId")
+        // Read real RSSI at the moment of firing
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        @Suppress("DEPRECATION")
+        val actualRssi = wifiManager.connectionInfo?.rssi ?: -127
+
+        lastBreachSentTime = now
+        Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId | RSSI: $actualRssi")
 
         // ← FIXED: Non-blocking HTTP POST using Coroutine on IO thread
         CoroutineScope(Dispatchers.IO).launch {
@@ -100,11 +112,11 @@ class SixSignalMonitor(private val context: Context) {
                 conn.readTimeout = 5000
                 conn.doOutput = true
 
-                // ← FIXED: Build JSON body matching backend Breach model
+                // ← FIXED: Build JSON body matching backend Breach model with actual RSSI
                 val body = JSONObject().apply {
                     put("deviceId", deviceId)
                     put("roomId", roomId)
-                    put("rssi", -127) // ← WiFi OFF means no signal at all
+                    put("rssi", actualRssi)
                 }
 
                 val writer = OutputStreamWriter(conn.outputStream)
@@ -128,19 +140,17 @@ class SixSignalMonitor(private val context: Context) {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         var failScore = 0
 
-        // ← FIXED: Signal 1 — WiFi enabled check (INSTANT BREACH if OFF)
+        @Suppress("DEPRECATION")
+        val info = wifiManager.connectionInfo
+        val actualRssi = info?.rssi ?: -127
+
+        // ← FIXED: Signal 1 — WiFi enabled check
         if (!wifiManager.isWifiEnabled) {
             failScore++
-            Log.e(TAG, "🚨 Signal 1 FAIL: WiFi is DISABLED — triggering INSTANT breach")
-            // ← FIXED: WiFi OFF = INSTANT BREACH, do NOT wait for score threshold
-            WiFiMonitoringService.triggerBreachAlert("WiFi is OFF")
-            triggerBreach("WiFi is OFF")
-            return // ← No need to check other signals, WiFi is completely off
+            Log.e(TAG, "🚨 Signal 1 FAIL: WiFi is DISABLED")
         }
 
         // ← FIXED: Signal 2 — Connection info null/disconnected check
-        @Suppress("DEPRECATION")
-        val info = wifiManager.connectionInfo
         if (info == null || info.networkId == -1) {
             failScore++
             Log.w(TAG, "Signal 2 FAIL: WiFi connected but no network ID")
@@ -161,24 +171,35 @@ class SixSignalMonitor(private val context: Context) {
         }
 
         // ← FIXED: Signal 4 — RSSI strength check
-        @Suppress("DEPRECATION")
-        val rssi = info?.rssi ?: -127
-        if (rssi < -90) {
+        if (actualRssi < -90) {
             failScore++
-            Log.w(TAG, "Signal 4 FAIL: RSSI too weak: $rssi dBm")
+            Log.w(TAG, "Signal 4 FAIL: RSSI too weak: $actualRssi dBm")
         }
 
-        // ← FIXED BUG 1: Proper scoring — breach on >= 3 signals failing (not the old broken >= 3 with max 2)
+        val now = SystemClock.elapsedRealtime()
+
         if (failScore >= 3) {
-            Log.e(TAG, "🚨 Score $failScore/4 — BREACH THRESHOLD REACHED")
-            WiFiMonitoringService.triggerBreachAlert("Score $failScore/4 failed")
-            triggerBreach("Score $failScore/4 signals failed")
-        } else if (failScore > 0) {
-            Log.w(TAG, "⚠️ Warning: $failScore/4 signals degraded, not breaching yet.")
+            // Validate RSSI: if signal is actually fine, ignore the screen-off blip
+            if (actualRssi > -100 && wifiManager.isWifiEnabled) {
+                Log.w(TAG, "Ignoring false breach: RSSI is $actualRssi dBm (fine). Likely screen-off blip.")
+                firstWifiLossTime = 0L // Reset delay timer
+            } else {
+                // Start or check the 15-second delay timer
+                if (firstWifiLossTime == 0L) {
+                    firstWifiLossTime = now
+                    Log.w(TAG, "⏱️ Starting 15s Wi-Fi loss confirmation timer...")
+                } else if (now - firstWifiLossTime >= 15_000L) {
+                    Log.e(TAG, "🚨 15s confirmed! Score $failScore/4 — BREACH")
+                    WiFiMonitoringService.triggerBreachAlert("Score $failScore/4 failed")
+                } else {
+                    Log.w(TAG, "⏱️ Waiting for 15s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
+                }
+            }
         } else {
-            // ← All signals healthy — reset breach cooldown
+            // Signal is healthy or recovering
+            firstWifiLossTime = 0L
             WiFiMonitoringService.lastBreachTime = 0L
-            Log.d(TAG, "✅ All 4 signals SECURE. RSSI: $rssi dBm")
+            Log.d(TAG, "✅ Signal SECURE. RSSI: $actualRssi dBm")
         }
     }
 }
