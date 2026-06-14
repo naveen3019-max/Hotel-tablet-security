@@ -8,6 +8,24 @@ export interface WebSocketMessage {
   [key: string]: unknown;
 }
 
+const getWsUrl = (httpUrl: string): string => {
+    if (!httpUrl) {
+        console.error('No API URL configured!')
+        return ''
+    }
+    const wsUrl = httpUrl
+        .replace(/^https:\/\//i, 'wss://')
+        .replace(/^http:\/\//i, 'ws://')
+    
+    // ← ADD: Ensure correct path
+    const finalUrl = wsUrl.endsWith('/ws/dashboard')
+        ? wsUrl
+        : `${wsUrl}/ws/dashboard`
+    
+    console.log('[WS] Connecting to:', finalUrl)
+    return finalUrl
+}
+
 export function useWebSocket(url: string) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
@@ -29,7 +47,9 @@ export function useWebSocket(url: string) {
       if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
       setStatus('connecting');
-      const ws = new WebSocket(url);
+      const wsUrl = getWsUrl(url);
+      if (!wsUrl) return;
+      const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         if (!isMounted) return;

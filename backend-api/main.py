@@ -153,7 +153,7 @@ async def monitor_device_heartbeats():
     
     # Heartbeat timeout: 35 seconds
     # (devices send heartbeats every 10 seconds. 35s provides a safe buffer for network jitter)
-    OFFLINE_THRESHOLD_SECONDS = 35
+    OFFLINE_THRESHOLD_SECONDS = 60
     
     while True:
         try:
@@ -210,7 +210,7 @@ async def monitor_device_heartbeats():
                         "roomId": device.get("roomId", device.get("room_id", "unknown")),
                         "type": "breach",
                         "severity": "high",
-                        "message": f"WiFi connection lost - device stopped sending heartbeats (last seen {int(seconds_since_heartbeat)}s ago)",
+                        "message": f"No heartbeat for {int(seconds_since_heartbeat)}s",
                         "rssi": device.get("rssi", -127),
                         "bssid": device.get("bssid", "unknown"),
                         "ts": now,
@@ -226,7 +226,7 @@ async def monitor_device_heartbeats():
                         "rssi": device.get("rssi", -127),
                         "bssid": device.get("bssid", "unknown"),
                         "source": "heartbeat_timeout",
-                        "message": f"WiFi disconnected - no heartbeat for {int(seconds_since_heartbeat)}s"
+                        "message": f"No heartbeat for {int(seconds_since_heartbeat)}s"
                     })
                     
                     # Send mobile notification
@@ -576,6 +576,65 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     
     logger.info(f"💓 HEARTBEAT: {h.deviceId} | Room: {h.roomId} | RSSI: {h.rssi} dBm | BSSID: {h.wifiBssid[:17]}")
     
+    # ← FIXED: RSSI -127 = WiFi physically OFF
+    # BSSID 02:00:00:00:00:00 = Android dummy
+    WIFI_OFF_RSSI = -120
+    DUMMY_BSSID = "02:00:00:00:00:00"
+
+    if h.rssi <= WIFI_OFF_RSSI or \
+       h.wifiBssid == DUMMY_BSSID:
+        
+        logger.warning(
+            f"🚨 WiFi OFF heartbeat: "
+            f"Device={h.deviceId} "
+            f"RSSI={h.rssi} "
+            f"BSSID={h.wifiBssid}"
+        )
+        
+        # Get current device to check if we already marked breach
+        current_device = await devices_collection.find_one({"_id": h.deviceId})
+        existing_status = current_device.get("status", StatusEnum.ok) if current_device else StatusEnum.ok
+        
+        # Update device status to breach
+        await devices_collection.update_one(
+            {"_id": h.deviceId},
+            {"$set": {
+                "status": StatusEnum.breach,
+                "rssi": h.rssi,
+                "roomId": h.roomId
+            }},
+            upsert=True
+        )
+        
+        # Only create alert if not already breached
+        if existing_status != StatusEnum.breach:
+            # Create breach alert
+            await alerts_collection.insert_one({
+                "deviceId": h.deviceId,
+                "roomId": h.roomId,
+                "type": "breach",
+                "severity": "critical",
+                "message": f"WiFi disabled on device (RSSI: {h.rssi} dBm)",
+                "rssi": h.rssi,
+                "ts": get_ist_time(),
+                "acknowledged": False
+            })
+        
+        # Broadcast to dashboard
+        print(f"🚨 WiFi OFF breach: {h.deviceId}",
+              flush=True)
+        await broadcast_event("alert", {
+            "type": "breach",
+            "deviceId": h.deviceId,
+            "roomId": h.roomId,
+            "rssi": h.rssi,
+            "message": "WiFi disabled on device"
+        })
+        
+        # Do NOT update last_seen
+        # Return breach status
+        return {"ok": True, "status": "breach"}
+
     # Get current device status
     current_device = await devices_collection.find_one({"_id": h.deviceId})
     existing_status = current_device.get("status", StatusEnum.ok) if current_device else StatusEnum.ok
