@@ -447,6 +447,17 @@ class KioskService : Service() {
     }
 }
 
+    private var lastKnownRssi: Int = -99
+
+    private fun getRssiWithRetry(): Int {
+        repeat(3) {
+            val rssi = wifiFence.getCurrentRssi()
+            if (rssi != null && rssi > -120) return rssi
+            Thread.sleep(200L)
+        }
+        return lastKnownRssi
+    }
+
     private fun startHeartbeatLoop(deviceId: String, roomId: String, targetBssid: String, auth: String) {
         heartbeatJob?.cancel()
         heartbeatJob = serviceScope.launch {
@@ -459,7 +470,8 @@ class KioskService : Service() {
                     
                     heartbeatWakeLock.acquire(15_000L)
                     try {
-                        val rssi = wifiFence.getCurrentRssi() ?: -127
+                        val rssi = getRssiWithRetry()
+                        if (rssi > -120) lastKnownRssi = rssi
                         val bssidActual = wifiFence.getCurrentBssid() ?: targetBssid
                         val battery = batteryWatcher.getCurrentLevel()
 

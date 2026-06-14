@@ -24,9 +24,11 @@ class SixSignalMonitor(private val context: Context) {
     private var isStartupGracePeriod = true
 
     init {
+        isStartupGracePeriod = true
         Handler(Looper.getMainLooper()).postDelayed({
             isStartupGracePeriod = false
-        }, 5000L)
+            Log.d(TAG, "Grace period ended — breach detection now active")
+        }, 8_000L)
     }
 
     companion object {
@@ -72,7 +74,7 @@ class SixSignalMonitor(private val context: Context) {
     }
 
     // ← FIXED BUG 2: triggerBreach now actually sends HTTP POST to backend
-    fun triggerBreach(reason: String) {
+    fun triggerBreach(reason: String, rssi: Int) {
         val now = SystemClock.elapsedRealtime()
 
         // ← FIXED: Check cooldown to prevent spamming backend
@@ -99,13 +101,8 @@ class SixSignalMonitor(private val context: Context) {
             return
         }
 
-        // Read real RSSI at the moment of firing
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        @Suppress("DEPRECATION")
-        val actualRssi = wifiManager.connectionInfo?.rssi ?: -127
-
         lastBreachSentTime = now
-        Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId | RSSI: $actualRssi")
+        Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId | RSSI: $rssi")
 
         // ← FIXED: Non-blocking HTTP POST using Coroutine on IO thread
         CoroutineScope(Dispatchers.IO).launch {
@@ -123,7 +120,7 @@ class SixSignalMonitor(private val context: Context) {
                 val body = JSONObject().apply {
                     put("deviceId", deviceId)
                     put("roomId", roomId)
-                    put("rssi", actualRssi)
+                    put("rssi", rssi)
                 }
 
                 val writer = OutputStreamWriter(conn.outputStream)
@@ -202,7 +199,7 @@ class SixSignalMonitor(private val context: Context) {
                     Log.w(TAG, "⏱️ Starting 15s Wi-Fi loss confirmation timer...")
                 } else if (now - firstWifiLossTime >= 15_000L) {
                     Log.e(TAG, "🚨 15s confirmed! Score $failScore/4 — BREACH")
-                    WiFiMonitoringService.triggerBreachAlert("Score $failScore/4 failed")
+                    WiFiMonitoringService.triggerBreachAlert("Score $failScore/4 failed", actualRssi)
                 } else {
                     Log.w(TAG, "⏱️ Waiting for 15s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
                 }

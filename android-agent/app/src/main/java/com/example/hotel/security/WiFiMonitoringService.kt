@@ -98,12 +98,12 @@ class WiFiMonitoringService : Service() {
 
         // ── Public helpers called from ScreenAndWiFiReceiver / SixSignalMonitor ──
 
-        fun triggerBreachAlert(reason: String) {
+        fun triggerBreachAlert(reason: String, rssi: Int = -127) {
             val now = SystemClock.elapsedRealtime()
             if (now - lastBreachTime > BREACH_COOLDOWN) {
                 lastBreachTime = now
                 Log.e(TAG, "🚨 BREACH TRIGGERED: $reason")
-                instance?.sixSignalMonitor?.triggerBreach(reason)
+                instance?.sixSignalMonitor?.triggerBreach(reason, rssi)
             }
         }
 
