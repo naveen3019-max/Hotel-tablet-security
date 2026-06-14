@@ -104,38 +104,50 @@ class SixSignalMonitor(private val context: Context) {
         lastBreachSentTime = now
         Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId | RSSI: $rssi")
 
-        // ← FIXED: Non-blocking HTTP POST using Coroutine on IO thread
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val url = URL("$backendUrl/api/alert/breach")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("Authorization", "Bearer $deviceToken") // ← FIXED: JWT auth header
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
-                conn.doOutput = true
-
-                // ← FIXED: Build JSON body matching backend Breach model with actual RSSI
-                val body = JSONObject().apply {
-                    put("deviceId", deviceId)
-                    put("roomId", roomId)
-                    put("rssi", rssi)
+        // Launch in a background thread — HTTPURLConnection is blocking
+        // We use a Thread instead of Coroutine because the dispatcher might be throttled when WiFi is off
+        Thread {
+            var posted = false
+            // Try up to 5 times with 3s between attempts
+            // First 1-2 attempts may catch WiFi in its final seconds
+            // Later attempts catch mobile data fallback if available
+            repeat(5) { attempt ->
+                if (posted) return@repeat
+                try {
+                    val url = URL("$backendUrl/api/alert/breach")
+                    val conn = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Content-Type", "application/json")
+                        setRequestProperty("Authorization", "Bearer $deviceToken")
+                        connectTimeout = 8_000   // 8s connect timeout per attempt
+                        readTimeout = 8_000      // 8s read timeout per attempt
+                        doOutput = true
+                    }
+                    val body = JSONObject().apply {
+                        put("deviceId", deviceId)
+                        put("roomId", roomId)
+                        put("rssi", rssi)
+                    }
+                    OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+                    val code = conn.responseCode
+                    if (code in 200..299) {
+                        Log.d(TAG, "✅ Breach POST sent on attempt ${attempt + 1}")
+                        posted = true
+                    } else {
+                        Log.w(TAG, "⚠️ Breach POST attempt ${attempt + 1} got HTTP $code")
+                    }
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.w(TAG, "⚠️ Breach POST attempt ${attempt + 1} failed: ${e.message}")
                 }
-
-                val writer = OutputStreamWriter(conn.outputStream)
-                writer.write(body.toString())
-                writer.flush()
-                writer.close()
-
-                val responseCode = conn.responseCode
-                Log.i(TAG, "✅ Breach POST response: $responseCode for reason: $reason")
-
-                conn.disconnect()
-            } catch (e: Exception) {
-                // ← FIXED: Never crash on network error — just log and retry next cycle
-                Log.e(TAG, "❌ Breach POST failed (will retry next check): ${e.message}")
+                if (!posted) Thread.sleep(3_000L)  // wait 3s before retry
             }
+            if (!posted) {
+                Log.e(TAG, "❌ All breach POST attempts failed — backend will detect via heartbeat timeout")
+            }
+        }.apply {
+            isDaemon = true
+            start()
         }
     }
 
@@ -193,15 +205,15 @@ class SixSignalMonitor(private val context: Context) {
                 Log.w(TAG, "Ignoring false breach: RSSI is $actualRssi dBm (fine). Likely screen-off blip.")
                 firstWifiLossTime = 0L // Reset delay timer
             } else {
-                // Start or check the 15-second delay timer
+                // Start or check the 8-second delay timer
                 if (firstWifiLossTime == 0L) {
                     firstWifiLossTime = now
-                    Log.w(TAG, "⏱️ Starting 15s Wi-Fi loss confirmation timer...")
-                } else if (now - firstWifiLossTime >= 15_000L) {
-                    Log.e(TAG, "🚨 15s confirmed! Score $failScore/4 — BREACH")
+                    Log.w(TAG, "⏱️ Starting 8s Wi-Fi loss confirmation timer...")
+                } else if (now - firstWifiLossTime >= 8_000L) {
+                    Log.e(TAG, "🚨 8s confirmed! Score $failScore/4 — BREACH")
                     WiFiMonitoringService.triggerBreachAlert("Score $failScore/4 failed", actualRssi)
                 } else {
-                    Log.w(TAG, "⏱️ Waiting for 15s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
+                    Log.w(TAG, "⏱️ Waiting for 8s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
                 }
             }
         } else {
