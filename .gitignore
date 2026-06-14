@@ -89,3 +89,6 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# Nested duplicate project folder (accidentally created by git extract/zip)
+WEDDING-CARD-cc895524abaddd4e0e79cc06099f9f102c0f16c7/
