@@ -114,6 +114,17 @@ def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return utc_now.astimezone(ist)
 
+def get_utc_naive() -> datetime:
+    """
+    Returns current UTC time as naive datetime.
+    Use this for ALL MongoDB last_seen writes.
+    MongoDB stores naive datetimes as UTC.
+    Using this ensures consistent comparison
+    with the utc_threshold_naive in heartbeat
+    monitoring.
+    """
+    return datetime.now(pytz.utc).replace(tzinfo=None)
+
 def to_ist_isoformat(dt):
     """Convert datetime to IST timezone and return ISO format string"""
     if dt is None:
@@ -372,7 +383,7 @@ async def register_device(payload: DeviceRegister):
         "room_id": payload.roomId,
         "hotel_id": payload.hotelId or "default",
         "status": StatusEnum.ok,
-        "last_seen": get_ist_time()
+        "last_seen": get_utc_naive()
     }
     
     await devices_collection.update_one(
@@ -413,7 +424,7 @@ async def alert_breach(b: Breach, device=Depends(get_current_device)):
             "$set": {
                 "status": StatusEnum.breach,
                 "rssi": b.rssi,
-                "last_seen": b.ts,
+                "last_seen": get_utc_naive(),
                 "roomId": b.roomId
             }
         },
@@ -473,7 +484,7 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
         {
             "$set": {
                 "status": StatusEnum.compromised,
-                "last_seen": t.ts
+                "last_seen": get_utc_naive()
             }
         },
         upsert=True
@@ -528,7 +539,7 @@ async def alert_battery(b: Battery, device=Depends(get_current_device)):
             "$set": {
                 "status": StatusEnum.ok,
                 "battery": b.level,
-                "last_seen": b.ts
+                "last_seen": get_utc_naive()
             }
         },
         upsert=True
@@ -739,7 +750,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
         "rssi": h.rssi,
         "bssid": h.wifiBssid,
         "ip": h.ip,
-        "last_seen": h.ts
+        "last_seen": get_utc_naive()
     }
     
     if h.battery is not None:
@@ -944,7 +955,7 @@ async def quick_add_device(
         "room_id": roomId,
         "hotel_id": hotelId,
         "status": StatusEnum.ok,
-        "last_seen": get_ist_time(),
+        "last_seen": get_utc_naive(),
         "battery": None,
         "rssi": None
     }
