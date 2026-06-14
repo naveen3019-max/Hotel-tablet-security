@@ -14,6 +14,7 @@ from notifications import NotificationService
 from auth import AuthService, get_current_device
 import asyncio
 import logging
+import httpx
 import json
 from sse_starlette.sse import EventSourceResponse
 import redis.asyncio as redis
@@ -35,9 +36,25 @@ logger.setLevel(logging.INFO)
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(line_buffering=True)
 
+async def keepalive_ping():
+    """Pings self every 8 minutes to prevent Render connection idle timeout."""
+    await asyncio.sleep(30)  # wait for startup to complete
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    "https://hotel-tablet-security.onrender.com/health",
+                    timeout=10.0
+                )
+                logger.info(f"🏓 Keepalive ping: {r.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Keepalive ping failed: {e}")
+        await asyncio.sleep(480)  # 8 minutes — under Render's ~10 min timeout
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, monitoring_task
+    global redis_client, monitoring_task, keepalive_task
+    keepalive_task = None
     
     print("="*60, flush=True)
     print("🚀 BACKEND STARTUP", flush=True)
@@ -64,6 +81,7 @@ async def lifespan(app: FastAPI):
     
     # Start background heartbeat monitoring
     monitoring_task = asyncio.create_task(monitor_device_heartbeats())
+    keepalive_task = asyncio.create_task(keepalive_ping())
     logger.info("🚀 Background heartbeat monitoring started")
     print("✅ Heartbeat monitoring task started", flush=True)
     print("="*60, flush=True)
@@ -78,6 +96,8 @@ async def lifespan(app: FastAPI):
     # Cancel monitoring task
     if monitoring_task:
         monitoring_task.cancel()
+    if keepalive_task:
+        keepalive_task.cancel()
         try:
             await monitoring_task
         except asyncio.CancelledError:
