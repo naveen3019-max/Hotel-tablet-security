@@ -8,13 +8,16 @@ export function useAuth() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('hotel_auth');
-    if (token === 'authenticated') {
-      setIsAuthenticated(true);
-    } else {
-      router.replace('/login');
-    }
-    setChecking(false);
+    const timer = setTimeout(() => {
+      const token = localStorage.getItem('hotel_auth');
+      if (token === 'authenticated') {
+        setIsAuthenticated(true);
+      } else {
+        router.replace('/login');
+      }
+      setChecking(false);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [router]);
 
   const logout = () => {
