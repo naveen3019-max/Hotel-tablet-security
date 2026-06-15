@@ -11,10 +11,13 @@ export default function LoginPage() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
-    if (localStorage.getItem('hotel_auth') === 'authenticated') {
-      router.replace('/');
-    }
+    const timer = setTimeout(() => {
+      setMounted(true);
+      if (localStorage.getItem('hotel_auth') === 'authenticated') {
+        router.replace('/');
+      }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [router]);
 
   const handleLogin = (e: React.FormEvent) => {
