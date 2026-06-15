@@ -201,8 +201,8 @@ export default function EnhancedDashboard() {
         const a = await alertsRes.json();
 
         setDevices(Array.isArray(d) ? d.filter((dev: Device) => dev?.deviceId) : []);
-        // ← NEW: Reverse so newest alert is first
-        setAlerts(Array.isArray(a) ? [...a].reverse().slice(0, 100) : []);
+        // ← FIXED: Explicit descending sort (newest first)
+        setAlerts(Array.isArray(a) ? [...a].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100) : []);
         setIsLoading(false);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to fetch data");
