@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from "react"; // ← NEW: added useCallback and useRef
-import { useWebSocket } from "../hooks/useWebSocket"; // ← NEW: our WebSocket hook
-import LiveIndicator from "../components/LiveIndicator"; // ← NEW: live status badge
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useWebSocket } from "../hooks/useWebSocket";
+import LiveIndicator from "../components/LiveIndicator";
+import { TrashIcon, CheckIcon, WifiOffIcon } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
-const DASHBOARD_VERSION = "v3.0-websocket-live";
+const DASHBOARD_VERSION = "v4.0-redesign";
 
 // Format timestamp to Indian Standard Time
 const formatISTTime = (dateString: string): string => {
@@ -43,7 +44,6 @@ type Alert = {
   message?: string;
 };
 
-// ← NEW: Toast notification shown when a breach fires
 type Toast = {
   id: number;
   deviceId: string;
@@ -60,65 +60,46 @@ export default function EnhancedDashboard() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ← NEW: Toast queue for breach notifications
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastIdCounter = useRef(0);
 
-  // ← NEW: Connect WebSocket hook — this drives all live updates
+  // New states for redesign
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [alertFilter, setAlertFilter] = useState<string>("all");
+  const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
+
   const { lastMessage, status: connectionStatus } = useWebSocket(API);
 
-  // ← NEW: Helper to add a breach toast and auto-dismiss it after 8 seconds
   const addToast = useCallback((deviceId: string, roomId?: string, reason?: string) => {
     const id = ++toastIdCounter.current;
     setToasts((prev: Toast[]) => [...prev, { id, deviceId, roomId, reason }]);
-    // ← NEW: Auto-remove toast after 8 seconds
     setTimeout(() => {
       setToasts((prev: Toast[]) => prev.filter((t: Toast) => t.id !== id));
     }, 8000);
   }, []);
 
-  // ← NEW: React to every WebSocket message the server pushes
   useEffect(() => {
     if (!lastMessage) return;
 
     const { type, data } = lastMessage;
     const d = data as Record<string, unknown> | undefined;
 
-    // ← FIXED: Add console logging as requested
-    console.log(
-        '[Dashboard] WS:',
-        lastMessage.type,
-        d?.type,
-        d?.deviceId || (lastMessage as Record<string, unknown>).deviceId
-    );
-
     setTimeout(() => {
-      // ← FIXED: Fix breach detection condition (Change 1)
       if (lastMessage && (
           lastMessage.type === 'breach' ||
-          (lastMessage.type === 'alert' && 
-           d?.type === 'breach') ||
-          (lastMessage.type === 'device_update' && 
-           d?.status === 'breach')
+          (lastMessage.type === 'alert' && d?.type === 'breach') ||
+          (lastMessage.type === 'device_update' && d?.status === 'breach')
       )) {
-          // Get deviceId from any possible location
-          const breachDeviceId = 
-              d?.deviceId ||
-              d?.device_id ||
-              (lastMessage as Record<string, unknown>).deviceId;
+          const breachDeviceId = d?.deviceId || d?.device_id || (lastMessage as Record<string, unknown>).deviceId;
           
-          // ← ADD: Turn device dot RED immediately
           if (breachDeviceId) {
               setDevices((prev: Device[]) =>
                   prev.map((dev: Device) =>
-                      dev.deviceId === breachDeviceId
-                          ? { ...dev, status: 'breach' }
-                          : dev
+                      dev.deviceId === breachDeviceId ? { ...dev, status: 'breach' } : dev
                   )
               );
           }
           
-          // existing alert list update code...
           const newAlert: Alert = {
             type: "breach",
             deviceId: (breachDeviceId as string) || "Unknown",
@@ -127,26 +108,25 @@ export default function EnhancedDashboard() {
             acknowledged: false,
             message: d?.message as string | undefined,
           };
-          setAlerts((prev: Alert[]) => [newAlert, ...prev].slice(0, 100));
+          
+          setAlerts((prev: Alert[]) => [newAlert, ...prev].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100));
           
           if (breachDeviceId) {
             addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
           }
       }
 
-      // ← FIXED: Add device_update handler (Change 2)
-      if (lastMessage?.type === 'device_update' &&
-          d?.deviceId) {
+      if (lastMessage?.type === 'device_update' && d?.deviceId) {
           const update = d;
           setDevices((prev: Device[]) => {
-              // Create if not exists, else update
               const exists = prev.some(dev => dev.deviceId === update.deviceId);
               if (!exists) {
                   return [...prev, {
                       deviceId: update.deviceId as string,
                       status: (update.status as string) || 'ok',
                       battery: update.battery as number,
-                      rssi: update.rssi as number
+                      rssi: update.rssi as number,
+                      lastSeen: update.lastSeen as string
                   }];
               }
               return prev.map((dev: Device) =>
@@ -155,25 +135,22 @@ export default function EnhancedDashboard() {
                           ...dev,
                           status: (update.status as string) ?? dev.status,
                           rssi: (update.rssi as number) ?? dev.rssi,
-                          battery: (update.battery as number) ?? dev.battery
+                          battery: (update.battery as number) ?? dev.battery,
+                          lastSeen: (update.lastSeen as string) ?? dev.lastSeen
                         }
                       : dev
               );
           });
       }
 
-      // ← FIXED: Add device_recovered handler (Change 3)
-      if (lastMessage?.type === 'device_recovered' &&
-          d?.deviceId) {
+      if (lastMessage?.type === 'device_recovered' && d?.deviceId) {
           setDevices((prev: Device[]) =>
               prev.map((dev: Device) =>
-                  dev.deviceId === d.deviceId
-                      ? { ...dev, status: 'ok' }
-                      : dev
+                  dev.deviceId === d.deviceId ? { ...dev, status: 'ok' } : dev
               )
           );
       }
-      // Handle device offline/deleted
+
       if (type === "device_offline" || type === "device_deleted") {
           if (d?.deviceId) {
               if (type === "device_deleted") {
@@ -187,16 +164,14 @@ export default function EnhancedDashboard() {
               }
           }
       }
+      
       if (type === "database_cleared") {
-          // ← NEW: Wipe the UI when an admin clears the database
           setDevices([]);
           setAlerts([]);
       }
     }, 0);
   }, [lastMessage, addToast]);
 
-  // ── Initial data load + polling fallback ──────────────────────────────────
-  // ← NEW: Fetch initial data once on mount so the dashboard isn't blank
   useEffect(() => {
     if (!API) {
       setTimeout(() => {
@@ -224,7 +199,6 @@ export default function EnhancedDashboard() {
         const a = await alertsRes.json();
 
         setDevices(Array.isArray(d) ? d.filter((dev: Device) => dev?.deviceId) : []);
-        // ← FIXED: Explicit descending sort (newest first)
         setAlerts(Array.isArray(a) ? [...a].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100) : []);
         setIsLoading(false);
       } catch (e) {
@@ -234,24 +208,19 @@ export default function EnhancedDashboard() {
     };
 
     fetchAll();
-
-    // ← NEW: Fallback polling every 10s in case WebSocket drops between retries
     const pollId = setInterval(fetchAll, 10000);
     return () => clearInterval(pollId);
   }, []);
 
-  // ── Derived lists ──────────────────────────────────────────────────────────
-  const filteredDevices = devices.filter((d: Device) => {
-    if (!d?.deviceId) return false;
-    if (filter !== "all" && d.status !== filter) return false;
-    if (
-      searchQuery &&
-      !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !d.roomId?.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-      return false;
-    return true;
-  });
+  const handleDeleteDevice = async (deviceId: string) => {
+    try {
+      await fetch(`${API}/api/devices/${deviceId}`, { method: 'DELETE' });
+      setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
+      setDeleteConfirm(null);
+    } catch (e) {
+      console.error("Failed to delete device", e);
+    }
+  };
 
   const acknowledgeAlert = async (alert: Alert) => {
     try {
@@ -274,39 +243,102 @@ export default function EnhancedDashboard() {
     }
   };
 
-  const getStatusColor = (status?: string) => {
-    switch (status) {
-      case "ok": return "bg-green-500";
-      case "breach": return "bg-red-500 animate-pulse";
-      case "offline": return "bg-gray-400";
-      case "missing": return "bg-yellow-500";
-      default: return "bg-gray-400";
+  const acknowledgeAll = async () => {
+    try {
+      await fetch(`${API}/api/alerts/acknowledge-all`, { method: 'POST' });
+      setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
+    } catch (e) {
+      console.error("Failed to acknowledge all", e);
     }
   };
 
-  const getBatteryColor = (battery?: number) => {
-    if (!battery) return "text-gray-500";
+  const filteredDevices = devices.filter((d: Device) => {
+    if (!d?.deviceId) return false;
+    
+    // Status filter
+    if (filter === "ok" && d.status !== "ok") return false;
+    if (filter === "breach" && d.status !== "breach") return false;
+    if (filter === "offline" && (d.status !== "offline" && d.rssi !== -127)) return false;
+    if (filter === "missing" && d.status !== "missing") return false;
+    if (filter === "low_battery" && (d.battery === undefined || d.battery > 20)) return false;
+
+    // Search query
+    if (
+      searchQuery &&
+      !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !(d.roomId && d.roomId.toString().toLowerCase().includes(searchQuery.toLowerCase()))
+    )
+      return false;
+      
+    return true;
+  });
+
+  const getStatusCardClasses = (status?: string, rssi?: number) => {
+    if (status === "breach") {
+      return "border-2 border-red-400 bg-red-50/50 shadow-red-100 shadow-md";
+    }
+    if (status === "offline" || rssi === -127) {
+      return "border border-gray-300 bg-gray-50 opacity-75";
+    }
+    // Default OK
+    return "border border-green-200 bg-green-50/30";
+  };
+
+  const getStatusDotColor = (status?: string, rssi?: number) => {
+    if (status === "breach") return "bg-red-500 animate-pulse";
+    if (status === "offline" || rssi === -127) return "bg-gray-400";
+    if (status === "missing") return "bg-yellow-500";
+    return "bg-green-500";
+  };
+
+  const getBatteryClass = (battery?: number) => {
+    if (battery === undefined) return "text-gray-500";
     if (battery > 50) return "text-green-600";
     if (battery > 20) return "text-yellow-600";
     return "text-red-600 font-bold";
   };
 
-  const getRssiColor = (rssi?: number) => {
-    if (!rssi) return "text-gray-500";
-    if (rssi > -60) return "text-green-600";
-    if (rssi > -70) return "text-yellow-600";
-    return "text-red-600";
+  const getRssiClass = (rssi?: number) => {
+    if (rssi === undefined) return "text-gray-500";
+    if (rssi === -127) return "text-gray-400 italic";
+    if (rssi >= -60) return "text-green-600";
+    if (rssi >= -70) return "text-yellow-600";
+    if (rssi >= -80) return "text-orange-500";
+    return "text-red-500";
   };
 
+  const getRssiText = (rssi?: number) => {
+    if (rssi === undefined) return "—";
+    if (rssi === -127) return "No signal";
+    return `${rssi} dBm`;
+  };
+
+  const getBatteryText = (battery?: number) => {
+    if (battery === undefined) return "—";
+    if (battery <= 20) return `${battery}% ⚠️`;
+    return `${battery}%`;
+  };
+
+  // Header stats
+  const okCount = devices.filter(d => d.status === "ok" && d.rssi !== -127).length;
+  const breachCount = devices.filter(d => d.status === "breach").length;
+  const offlineCount = devices.filter(d => d.status === "offline" || d.rssi === -127).length;
+  const unackCount = alerts.filter(a => !a.acknowledged).length;
+
+  // Filtered alerts
+  const filteredAlerts = alerts.filter(a => {
+    if (alertFilter === 'all') return true;
+    if (alertFilter === 'breach') return a.type === 'breach';
+    if (alertFilter === 'wifi') return a.message?.toLowerCase().includes('wifi');
+    if (alertFilter === 'offline') return a.message?.toLowerCase().includes('heartbeat') || a.type === 'offline';
+    return true;
+  });
+
   return (
-    <main className="min-h-screen bg-gray-50 p-6">
-      {/* ← NEW: Toast container — stacks in bottom-right, auto-dismisses */}
+    <main className="min-h-screen bg-gray-50 p-4 sm:p-6">
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map((toast: Toast) => (
-          <div
-            key={toast.id}
-            className="bg-red-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-start gap-3 max-w-sm animate-bounce"
-          >
+          <div key={toast.id} className="bg-red-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-start gap-3 max-w-sm animate-bounce">
             <span className="text-2xl">🚨</span>
             <div>
               <p className="font-bold text-sm">BREACH DETECTED</p>
@@ -314,10 +346,9 @@ export default function EnhancedDashboard() {
               {toast.roomId && <p className="text-xs">Room: {toast.roomId}</p>}
               {toast.reason && <p className="text-xs opacity-80 mt-1">{toast.reason}</p>}
             </div>
-            {/* ← NEW: Manual dismiss button */}
             <button
               onClick={() => setToasts((prev: Toast[]) => prev.filter((t: Toast) => t.id !== toast.id))}
-              className="ml-auto text-white opacity-70 hover:opacity-100 text-lg leading-none"
+              className="ml-auto text-white opacity-70 hover:opacity-100 text-lg leading-none min-h-[44px] min-w-[44px] flex items-center justify-center"
             >
               ×
             </button>
@@ -326,7 +357,6 @@ export default function EnhancedDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Error Display */}
         {error && (
           <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4">
             <div className="flex items-center gap-2">
@@ -339,98 +369,114 @@ export default function EnhancedDashboard() {
           </div>
         )}
 
-        {/* Loading */}
         {isLoading && devices.length === 0 && (
           <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 text-center">
             <div className="text-blue-600 font-semibold">🔄 Loading dashboard...</div>
           </div>
         )}
 
-        {/* Header */}
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Hotel Tablet Security</h1>
-            <p className="text-gray-600">
-              {devices.length} devices •{" "}
-              {alerts.filter((a) => a && !a.acknowledged).length} unacknowledged alerts
-              <span className="ml-3 text-xs text-gray-400">{DASHBOARD_VERSION}</span>
-            </p>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Hotel Tablet Security</h1>
+            <div className="flex flex-wrap items-center gap-4 text-sm mt-1">
+              <span className="text-green-600 font-medium">✓ {okCount} secure</span>
+              <span className="text-red-500 font-medium">🚨 {breachCount} breach</span>
+              <span className="text-gray-400 font-medium">⚫ {offlineCount} offline</span>
+              <span className="text-orange-500 font-medium">🔔 {unackCount} unacknowledged</span>
+            </div>
           </div>
-          {/* ← NEW: LiveIndicator replaces the old hardcoded green dot */}
-          <LiveIndicator status={connectionStatus} />
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+            {unackCount > 0 && (
+              <button 
+                onClick={acknowledgeAll} 
+                className="text-xs text-blue-600 font-medium hover:underline bg-blue-50 px-3 py-2 rounded-md min-h-[44px] sm:min-h-0"
+              >
+                Acknowledge all alerts
+              </button>
+            )}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400 hidden sm:inline">{DASHBOARD_VERSION}</span>
+              <LiveIndicator status={connectionStatus} />
+            </div>
+          </div>
         </div>
 
-        {/* Controls */}
-        <div className="bg-white rounded-lg shadow p-4 flex gap-4">
+        <div className="bg-white rounded-lg shadow p-4 flex flex-col sm:flex-row gap-2 w-full">
           <input
             type="text"
             placeholder="Search devices or rooms..."
-            className="flex-1 px-4 py-2 border rounded-lg"
+            className="flex-1 px-4 py-2 border rounded-lg min-h-[44px] text-sm sm:text-base"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
           <select
-            className="px-4 py-2 border rounded-lg"
+            className="px-4 py-2 border rounded-lg min-h-[44px] text-sm sm:text-base"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           >
             <option value="all">All Devices</option>
-            <option value="ok">OK</option>
-            <option value="breach">Breach</option>
-            <option value="offline">Offline</option>
-            <option value="missing">Missing</option>
+            <option value="ok">Secure Only</option>
+            <option value="breach">Breach Only</option>
+            <option value="offline">Offline Only</option>
+            <option value="low_battery">Low Battery</option>
           </select>
         </div>
 
-        {/* Fleet Grid */}
         <section>
           <h2 className="text-xl font-semibold mb-4">Fleet Status</h2>
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredDevices.length === 0 && !isLoading && (
-              <div className="col-span-full text-center py-8 text-gray-500">
-                No devices found. Register a device using the Android app.
+              <div className="col-span-full text-center py-8 text-gray-500 bg-white rounded-lg border border-dashed border-gray-300">
+                No devices found matching your criteria.
               </div>
             )}
-            {filteredDevices
-              .filter((d: Device) => d?.deviceId)
-              .map((d: Device) => (
+            {filteredDevices.map((d: Device) => (
                 <div
                   key={d.deviceId}
-                  className={`bg-white rounded-lg shadow-md p-5 hover:shadow-lg transition-shadow ${
-                    d.status === "breach" ? "border-2 border-red-400" : ""
-                  }`}
+                  className={`rounded-lg p-5 transition-shadow relative ${getStatusCardClasses(d.status, d.rssi)}`}
                 >
                   <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <h3 className="font-bold text-lg">{d.deviceId}</h3>
-                      <p className="text-sm text-gray-600">Room {d.roomId || "—"}</p>
+                    <div className="flex-1 pr-8">
+                      <h3 className="font-bold text-lg truncate max-w-[180px] sm:max-w-[200px]" title={d.deviceId}>
+                        {d.deviceId}
+                      </h3>
+                      <p className="text-sm text-gray-600 font-medium">Room {d.roomId || "—"}</p>
                     </div>
-                    <span className={`w-4 h-4 rounded-full ${getStatusColor(d.status)}`} />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setDeleteConfirm(d.deviceId)}
+                        className="p-2 -mr-2 -mt-2 rounded hover:bg-red-100/50 text-gray-400 hover:text-red-500 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
+                        title="Delete device"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                      </button>
+                      <span className={`w-3.5 h-3.5 rounded-full shadow-sm border border-white ${getStatusDotColor(d.status, d.rssi)}`} />
+                    </div>
                   </div>
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-600">Status:</span>
-                      <span className="font-semibold">{d.status || "—"}</span>
+                      <span className="font-semibold uppercase tracking-wider text-xs">{(d.rssi === -127 && d.status !== "breach") ? "offline" : (d.status || "—")}</span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-600">Battery:</span>
-                      <span className={getBatteryColor(d.battery)}>
-                        {d.battery ? `${d.battery}%` : "—"}
+                      <span className={getBatteryClass(d.battery)}>
+                        {getBatteryText(d.battery)}
                       </span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-600">RSSI:</span>
-                      <span className={getRssiColor(d.rssi)}>
-                        {d.rssi ? `${d.rssi} dBm` : "—"}
+                      <span className={getRssiClass(d.rssi)}>
+                        {getRssiText(d.rssi)}
                       </span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-600">IP:</span>
                       <span className="font-mono text-xs">{d.ip || "—"}</span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-600">Last Seen:</span>
-                      <span className="text-xs">
+                      <span className="text-xs text-gray-500">
                         {d.lastSeen ? formatISTTime(d.lastSeen) : "—"}
                       </span>
                     </div>
@@ -438,100 +484,164 @@ export default function EnhancedDashboard() {
                 </div>
               ))}
           </div>
-          {filteredDevices.length === 0 && (
-            <div className="text-center text-gray-500 py-12">
-              No devices found matching your criteria
-            </div>
-          )}
         </section>
 
-        {/* Recent Alerts */}
         <section>
-          <h2 className="text-xl font-semibold mb-4">Recent Alerts</h2>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-3">
+            <h2 className="text-xl font-semibold">Recent Alerts</h2>
+            <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+              {['all', 'breach', 'wifi', 'offline'].map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => { setAlertFilter(tab); setVisibleAlertsCount(50); }}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium min-h-[44px] sm:min-h-0 flex-1 sm:flex-none transition-colors ${
+                    alertFilter === tab 
+                      ? 'bg-gray-800 text-white' 
+                      : 'bg-white border text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          
           <div className="bg-white rounded-lg shadow overflow-hidden">
-            <div className="max-h-96 overflow-y-auto">
-              {alerts.length === 0 && !isLoading && (
-                <div className="text-center py-8 text-gray-500">
-                  No alerts yet. Breaches will appear here instantly.
+            <div className="flex flex-col">
+              {filteredAlerts.length === 0 && !isLoading && (
+                <div className="text-center py-12 text-gray-500 bg-gray-50/50">
+                  No alerts matching your filter.
                 </div>
               )}
-              {alerts
-                .filter((a: Alert) => a?.type)
-                .map((a: Alert, i: number) => (
+              {filteredAlerts.slice(0, visibleAlertsCount).map((a: Alert, i: number) => {
+                const isBreach = a.type === "breach";
+                const isAcked = a.acknowledged;
+                
+                return (
                   <div
                     key={a.id ?? i}
-                    className={`border-b p-4 hover:bg-gray-50 cursor-pointer ${
-                      a.acknowledged ? "opacity-50" : ""
-                    } ${a.type === "breach" && !a.acknowledged ? "bg-red-50" : ""}`}
+                    className={`border-b border-gray-100 p-4 transition-colors flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3 relative
+                      ${isAcked ? "bg-white opacity-60" : isBreach ? "bg-red-50/40" : "bg-white"}
+                    `}
                     onClick={() => setSelectedAlert(a)}
                   >
-                    <div className="flex justify-between items-start">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`px-2 py-1 rounded text-xs font-semibold ${
-                              a.type === "breach"
-                                ? "bg-red-100 text-red-800"
-                                : "bg-yellow-100 text-yellow-800"
-                            }`}
-                          >
-                            {a.type}
+                    <div className={`absolute left-0 top-0 bottom-0 w-1 ${isBreach ? 'bg-red-500' : 'bg-yellow-500'} ${isAcked ? 'opacity-30' : ''}`} />
+                    
+                    <div className="flex-1 pl-2">
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wide ${
+                            isBreach ? "bg-red-100 text-red-800" : "bg-yellow-100 text-yellow-800"
+                        }`}>
+                          {a.type}
+                        </span>
+                        <span className="text-sm font-bold text-gray-900">
+                          {a.deviceId || (a.payload?.deviceId as string) || "Unknown"}
+                        </span>
+                        <span className="text-sm text-gray-500 font-medium">
+                          Room {a.roomId || (a.payload?.roomId as string) || "—"}
+                        </span>
+                        {isAcked && (
+                          <span className="text-xs text-green-600 flex items-center gap-1 font-medium bg-green-50 px-2 py-0.5 rounded-full">
+                            <CheckIcon className="w-3 h-3" /> Acknowledged
                           </span>
-                          <span className="text-sm font-medium">
-                            {a.deviceId || (a.payload?.deviceId as string) || "Unknown"} •{" "}
-                            Room {a.roomId || (a.payload?.roomId as string) || "Unknown"}
-                          </span>
-                          {a.acknowledged && (
-                            <span className="text-xs text-green-600">✓ Acknowledged</span>
-                          )}
+                        )}
+                      </div>
+                      
+                      {a.message && (
+                        <p className="text-sm text-gray-700 mt-1">{a.message}</p>
+                      )}
+                      
+                      {a.payload && Object.keys(a.payload).length > 0 && !isAcked && (
+                        <div className="mt-2 text-xs text-gray-500 bg-gray-50 p-2 rounded border border-gray-100 overflow-x-auto w-full">
+                          {JSON.stringify(a.payload)}
                         </div>
-                        {a.message && (
-                          <p className="mt-1 text-xs text-gray-600">{a.message}</p>
-                        )}
-                        {a.payload && Object.keys(a.payload).length > 0 && (
-                          <pre className="mt-2 text-xs text-gray-600 overflow-auto">
-                            {JSON.stringify(a.payload, null, 2)}
-                          </pre>
-                        )}
+                      )}
+                    </div>
+                    
+                    <div className="flex flex-row sm:flex-col justify-between sm:items-end items-center sm:ml-4 w-full sm:w-auto pl-2 sm:pl-0 border-t sm:border-0 border-gray-100 pt-2 sm:pt-0 mt-2 sm:mt-0">
+                      <div className="text-xs font-medium text-gray-400 whitespace-nowrap">
+                        {formatISTTime(a.ts)}
                       </div>
-                      <div className="text-right ml-4">
-                        <div className="text-xs text-gray-500">{formatISTTime(a.ts)}</div>
-                        {!a.acknowledged && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              acknowledgeAlert(a);
-                            }}
-                            className="mt-2 text-xs text-blue-600 hover:underline"
-                          >
-                            Acknowledge
-                          </button>
-                        )}
-                      </div>
+                      
+                      {!isAcked ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            acknowledgeAlert(a);
+                          }}
+                          className="mt-0 sm:mt-2 text-xs font-semibold text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-3 py-1.5 rounded transition-colors min-h-[44px] sm:min-h-0 flex items-center justify-center"
+                        >
+                          Acknowledge
+                        </button>
+                      ) : (
+                        <div className="mt-0 sm:mt-2 text-xs text-gray-400 flex items-center gap-1 min-h-[44px] sm:min-h-0">
+                          <CheckIcon className="w-3 h-3" /> Done
+                        </div>
+                      )}
                     </div>
                   </div>
-                ))}
+                );
+              })}
             </div>
+            {filteredAlerts.length > visibleAlertsCount && (
+              <div className="p-4 bg-gray-50 border-t text-center">
+                <button
+                  onClick={() => setVisibleAlertsCount(prev => prev + 50)}
+                  className="text-sm font-medium text-gray-600 hover:text-gray-900 bg-white border border-gray-300 px-6 py-2 rounded-lg shadow-sm w-full sm:w-auto min-h-[44px]"
+                >
+                  Load More Alerts
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
-        {/* Selected Alert Modal */}
+        {deleteConfirm && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full">
+              <div className="flex items-center gap-3 text-red-600 mb-4">
+                <TrashIcon className="w-6 h-6" />
+                <h3 className="text-lg font-bold">Delete Device?</h3>
+              </div>
+              <p className="text-gray-600 text-sm mb-6 leading-relaxed">
+                Are you sure you want to delete <strong className="text-gray-900">{deleteConfirm}</strong>?
+                This will permanently remove the device and all associated alerts from the system. 
+                This action cannot be undone.
+              </p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg min-h-[44px] transition-colors flex-1 sm:flex-none"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleDeleteDevice(deleteConfirm)}
+                  className="px-4 py-2 text-sm font-medium bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-sm min-h-[44px] transition-colors flex-1 sm:flex-none"
+                >
+                  Delete Device
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {selectedAlert && (
           <div
-            className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50"
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setSelectedAlert(null)}
           >
             <div
-              className="bg-white rounded-xl shadow-2xl p-6 max-w-lg w-full mx-4"
+              className="bg-white rounded-xl shadow-2xl p-6 max-w-lg w-full"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 className="text-lg font-bold mb-4">Alert Details</h3>
-              <pre className="text-xs bg-gray-50 p-4 rounded overflow-auto max-h-80">
-                {JSON.stringify(selectedAlert, null, 2)}
-              </pre>
+              <div className="text-xs bg-gray-50 p-4 rounded-lg overflow-auto max-h-[60vh] border border-gray-100 shadow-inner">
+                <pre>{JSON.stringify(selectedAlert, null, 2)}</pre>
+              </div>
               <button
                 onClick={() => setSelectedAlert(null)}
-                className="mt-4 px-4 py-2 bg-gray-800 text-white rounded hover:bg-gray-700"
+                className="mt-6 w-full px-4 py-2 bg-gray-800 text-white font-medium rounded-lg hover:bg-gray-900 min-h-[44px] transition-colors"
               >
                 Close
               </button>

@@ -1,4 +1,6 @@
-"use client";
+import os
+
+NEW_CONTENT = """\"\"\"use client\"\"\";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import LiveIndicator from "../components/LiveIndicator";
@@ -10,7 +12,7 @@ const DASHBOARD_VERSION = "v4.0-redesign";
 // Format timestamp to Indian Standard Time
 const formatISTTime = (dateString: string): string => {
   try {
-    const match = dateString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    const match = dateString.match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})/);
     if (!match) return dateString;
     const [, year, month, day, hour24, minute, second] = match;
     let hour = parseInt(hour24);
@@ -652,3 +654,13 @@ export default function EnhancedDashboard() {
     </main>
   );
 }
+"""
+
+base_dir = "c:/Users/navee/Downloads/Hotel-tablet-security-master/Hotel-tablet-security-master/WEDDING-CARD-cc895524abaddd4e0e79cc06099f9f102c0f16c7/dashboard/src/app"
+with open(os.path.join(base_dir, "page.tsx"), "w", encoding="utf-8") as f:
+    f.write(NEW_CONTENT)
+
+with open(os.path.join(base_dir, "enhanced-page.tsx"), "w", encoding="utf-8") as f:
+    f.write(NEW_CONTENT)
+
+print("Redesign applied successfully.")

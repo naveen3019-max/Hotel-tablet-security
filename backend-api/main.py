@@ -922,6 +922,12 @@ async def acknowledge_alert(payload: AlertAcknowledge):
     
     return {"ok": True}
 
+@app.post("/api/alerts/acknowledge-all")
+async def acknowledge_all():
+    """Acknowledge all alerts"""
+    await alerts_collection.update_many({}, {"$set": {"acknowledged": True}})
+    return {"status": "ok"}
+
 # Get recent alerts
 @app.get("/api/alerts/recent")
 async def recent_alerts(limit: int = 100, hotel_id: Optional[str] = None):
@@ -992,7 +998,10 @@ async def delete_device(device_id: str):
         raise HTTPException(status_code=404, detail="Device not found")
     
     # Delete associated alerts asynchronously
-    asyncio.create_task(alerts_collection.delete_many({"device_id": device_id}))
+    # Note: Using $or to handle both snake_case and camelCase field names
+    asyncio.create_task(alerts_collection.delete_many({
+        "$or": [{"device_id": device_id}, {"deviceId": device_id}]
+    }))
     
     logger.info(f"Device {device_id} deleted")
     
