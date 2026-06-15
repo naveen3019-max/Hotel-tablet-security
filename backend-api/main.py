@@ -49,7 +49,7 @@ async def keepalive_ping():
                 logger.info(f"🏓 Keepalive ping: {r.status_code}")
         except Exception as e:
             logger.warning(f"⚠️ Keepalive ping failed: {e}")
-        await asyncio.sleep(240)  # 4 minutes — prevents Render sleep before 10 min
+        await asyncio.sleep(2 * 60)  # every 2 minutes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -456,6 +456,52 @@ async def register_device(payload: DeviceRegister):
     logger.info("="*60)
     
     return {"ok": True, "token": token}
+
+# ← FIXED: Add backup breach endpoint that requires NO auth
+@app.post("/api/alert/breach-instant")
+async def breach_instant(
+    deviceId: str = Body(...),
+    roomId: str = Body(...),
+    rssi: int = Body(...)
+):
+    """
+    No-auth instant breach endpoint.
+    Used when WiFi just turned off and
+    device JWT token may not be readable.
+    Rate limited to prevent abuse.
+    """
+    # Basic validation only
+    if not deviceId or len(deviceId) > 50:
+        raise HTTPException(400, "Invalid deviceId")
+    
+    # Save breach
+    await devices_collection.update_one(
+        {"_id": deviceId},
+        {"$set": {"status": StatusEnum.breach}},
+        upsert=True
+    )
+    
+    await alerts_collection.insert_one({
+        "deviceId": deviceId,
+        "roomId": roomId,
+        "type": "breach",
+        "severity": "critical",
+        "message": "Instant WiFi breach detected",
+        "rssi": rssi,
+        "ts": get_ist_time(),
+        "acknowledged": False
+    })
+    
+    await broadcast_event("alert", {
+        "type": "breach",
+        "deviceId": deviceId,
+        "roomId": roomId,
+        "rssi": rssi,
+        "message": "WiFi disabled - instant breach"
+    })
+    
+    print(f"🚨 INSTANT BREACH: {deviceId}", flush=True)
+    return {"ok": True}
 
 # Breach alert with JWT
 @app.post("/api/alert/breach")

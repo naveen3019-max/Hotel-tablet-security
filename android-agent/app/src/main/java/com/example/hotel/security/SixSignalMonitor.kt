@@ -74,7 +74,7 @@ class SixSignalMonitor(private val context: Context) {
     }
 
     // ← FIXED BUG 2: triggerBreach now actually sends HTTP POST to backend
-    fun triggerBreach(reason: String, rssi: Int) {
+    fun triggerBreach(reason: String, rssi: Int, isImmediate: Boolean = false) {
         val now = SystemClock.elapsedRealtime()
 
         // ← FIXED: Check cooldown to prevent spamming backend
@@ -107,48 +107,92 @@ class SixSignalMonitor(private val context: Context) {
         // Launch in a background thread — HTTPURLConnection is blocking
         // We use a Thread instead of Coroutine because the dispatcher might be throttled when WiFi is off
         Thread {
-            var posted = false
-            // Try up to 5 times with 3s between attempts
-            // First 1-2 attempts may catch WiFi in its final seconds
-            // Later attempts catch mobile data fallback if available
-            repeat(5) { attempt ->
-                if (posted) return@repeat
+            var success = false
+            
+            // ← FIXED: Try no-auth instant endpoint first for immediate breach detection
+            if (isImmediate) {
                 try {
-                    val url = URL("$backendUrl/api/alert/breach")
-                    val conn = (url.openConnection() as HttpURLConnection).apply {
-                        requestMethod = "POST"
-                        setRequestProperty("Content-Type", "application/json")
-                        setRequestProperty("Authorization", "Bearer $deviceToken")
-                        connectTimeout = 8_000   // 8s connect timeout per attempt
-                        readTimeout = 8_000      // 8s read timeout per attempt
-                        doOutput = true
+                    success = postBreach(backendUrl, "breach-instant", deviceId, roomId, rssi, deviceToken, requireAuth = false)
+                    if (success) {
+                        Log.i(TAG, "✅ Instant breach sent!")
+                        return@Thread
                     }
-                    val body = JSONObject().apply {
-                        put("deviceId", deviceId)
-                        put("roomId", roomId)
-                        put("rssi", rssi)
-                    }
-                    OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-                    val code = conn.responseCode
-                    if (code in 200..299) {
-                        Log.d(TAG, "✅ Breach POST sent on attempt ${attempt + 1}")
-                        posted = true
-                    } else {
-                        Log.w(TAG, "⚠️ Breach POST attempt ${attempt + 1} got HTTP $code")
-                    }
-                    conn.disconnect()
                 } catch (e: Exception) {
-                    Log.w(TAG, "⚠️ Breach POST attempt ${attempt + 1} failed: ${e.message}")
+                    Log.w(TAG, "Instant endpoint failed, trying JWT endpoint")
                 }
-                if (!posted) Thread.sleep(3_000L)  // wait 3s before retry
             }
-            if (!posted) {
-                Log.e(TAG, "❌ All breach POST attempts failed — backend will detect via heartbeat timeout")
+            
+            val maxAttempts = 15
+            
+            // Fall back to JWT endpoint with retries
+            repeat(maxAttempts) { attempt ->
+                if (success) return@repeat
+                
+                try {
+                    success = postBreach(backendUrl, "breach", deviceId, roomId, rssi, deviceToken, requireAuth = true)
+                    
+                    if (success) {
+                        Log.i(TAG, "✅ JWT breach success attempt ${attempt + 1}")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Attempt ${attempt + 1} failed: ${e.message}")
+                }
+                
+                if (!success) {
+                    // ← FIXED: Fast retry first 3 attempts then normal pace for Render wake
+                    val delayMs = if (attempt < 3) {
+                        1000L  // 1s for first 3 attempts
+                    } else {
+                        2000L  // 2s for remaining attempts
+                    }
+                    Thread.sleep(delayMs)
+                }
+            }
+            
+            if (!success) {
+                Log.e(TAG, "❌ All $maxAttempts breach attempts failed. Backend timeout will catch it.")
             }
         }.apply {
             isDaemon = true
             start()
         }
+    }
+
+    private fun postBreach(
+        backendUrl: String,
+        endpoint: String,
+        deviceId: String,
+        roomId: String,
+        rssi: Int,
+        deviceToken: String,
+        requireAuth: Boolean
+    ): Boolean {
+        val url = URL("$backendUrl/api/alert/$endpoint")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        if (requireAuth) {
+            conn.setRequestProperty("Authorization", "Bearer $deviceToken")
+        }
+        conn.doOutput = true
+        // ← FIXED: 5s timeout not 10s
+        conn.connectTimeout = 5000
+        conn.readTimeout = 5000
+        
+        val body = JSONObject().apply {
+            put("deviceId", deviceId)
+            put("roomId", roomId)
+            put("rssi", rssi)
+        }
+        
+        OutputStreamWriter(conn.outputStream).use {
+            it.write(body.toString())
+            it.flush()
+        }
+        
+        val code = conn.responseCode
+        conn.disconnect()
+        return code in 200..299
     }
 
     // ← FIXED BUG 1: Complete rewrite of security check with proper threshold
@@ -204,7 +248,7 @@ class SixSignalMonitor(private val context: Context) {
                 // WIFI_STATE_DISABLING = hardware confirmation, no delay needed
                 // Radio still active for ~1-2s — fire POST immediately
                 Log.d(TAG, "⚡ IMMEDIATE breach — DISABLING state, skipping 8s delay")
-                triggerBreach("⚡ IMMEDIATE breach — DISABLING state", actualRssi)
+                triggerBreach("⚡ IMMEDIATE breach — DISABLING state", actualRssi, isImmediate = true)
                 return
             }
 
