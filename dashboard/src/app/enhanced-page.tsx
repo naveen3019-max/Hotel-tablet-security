@@ -2,10 +2,23 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import LiveIndicator from "../components/LiveIndicator";
-import { TrashIcon, CheckIcon, WifiOffIcon } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
 const DASHBOARD_VERSION = "v4.0-redesign";
+
+const TrashIcon = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M3 6h18"/>
+    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+  </svg>
+);
+
+const CheckIcon = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>
+);
 
 // Format timestamp to Indian Standard Time
 const formatISTTime = (dateString: string): string => {
