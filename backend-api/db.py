@@ -39,7 +39,13 @@ class StatusEnum(str, Enum):
 # Pydantic Models for validation
 class Hotel(BaseModel):
     hotel_id: str = Field(..., alias="_id")
-    name: str
+    hotel_name: str
+    username: str
+    password: str
+    role: str = "hotel_admin"
+    subscription_plan: str = "premium"
+    subscription_active: bool = True
+    max_devices: int = 100
     contact_email: Optional[str] = None
     slack_webhook: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -68,6 +74,8 @@ class Device(BaseModel):
     battery: Optional[int] = None
     rssi: Optional[int] = None
     ip: Optional[str] = None
+    registered_by: Optional[str] = None
+    staff_name: Optional[str] = None
     last_seen: datetime = Field(default_factory=datetime.utcnow)
     
     class Config:
@@ -106,5 +114,8 @@ async def init_db():
     
     # Room indexes
     await rooms_collection.create_index("hotel_id", sparse=True)
+    
+    # Hotel indexes
+    await hotels_collection.create_index("username", unique=True)
     
     print("MongoDB indexes created successfully")

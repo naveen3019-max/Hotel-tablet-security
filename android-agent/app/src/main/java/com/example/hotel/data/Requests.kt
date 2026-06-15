@@ -2,7 +2,9 @@ package com.example.hotel.data
 
 data class RegisterRequest(
     val deviceId: String,
-    val roomId: String
+    val roomId: String,
+    val staffUsername: String? = null,
+    val staffName: String? = null
 )
 
 data class HeartbeatRequest(

@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Optional
 import pytz  # type: ignore
 from db import (
-    db, devices_collection, alerts_collection, rooms_collection,
+    db, devices_collection, alerts_collection, rooms_collection, hotels_collection,
     StatusEnum, init_db
 )
 from config import settings
 from notifications import NotificationService
-from auth import AuthService, get_current_device
+from auth import AuthService, get_current_device, get_current_user, require_role
 import asyncio
 import logging
 import httpx
@@ -335,6 +335,17 @@ class DeviceRegister(BaseModel):
     deviceId: str
     roomId: str
     hotelId: Optional[str] = None
+    staffUsername: Optional[str] = None
+    staffName: Optional[str] = None
+
+class CreateHotelRequest(BaseModel):
+    hotel_id: str
+    hotel_name: str
+    username: str
+    password: str
+    subscription_plan: str = "premium"
+    max_devices: int = 100
+    contact_email: Optional[str] = None
 
 class AlertAcknowledge(BaseModel):
     alertId: str
@@ -402,34 +413,94 @@ async def create_device_token(payload: DeviceRegister):
 async def create_user_token(username: str = Body(...), password: str = Body(...)):
     """Issue JWT token for user (staff/admin)"""
     if username == "admin" and password == "admin":
-        token = AuthService.create_user_token(user_id=username, role="admin")
-        return {"token": token, "type": "Bearer", "expires_in": settings.jwt_expiration_minutes * 60}
+        token = AuthService.create_user_token(user_id=username, role="super_admin", hotel_id="ALL", hotel_name="All Hotels")
+        return {
+            "token": token,
+            "username": "admin",
+            "role": "super_admin",
+            "hotel_id": "ALL",
+            "hotel_name": "All Hotels",
+            "name": "Super Admin"
+        }
+    
+    # Check hotels collection
+    hotel = await hotels_collection.find_one({"username": username, "password": password})
+    if hotel:
+        token = AuthService.create_user_token(
+            user_id=username,
+            role=hotel.get("role", "hotel_admin"),
+            hotel_id=hotel.get("_id"),
+            hotel_name=hotel.get("hotel_name")
+        )
+        return {
+            "token": token,
+            "username": username,
+            "role": hotel.get("role", "hotel_admin"),
+            "hotel_id": hotel.get("_id"),
+            "hotel_name": hotel.get("hotel_name"),
+            "name": hotel.get("hotel_name")
+        }
+        
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.post("/api/admin/create-hotel")
+async def create_hotel(req: CreateHotelRequest, user=Depends(require_role("super_admin"))):
+    hotel_data = req.dict(by_alias=True)
+    hotel_data["_id"] = req.hotel_id
+    hotel_data["role"] = "hotel_admin"
+    hotel_data["subscription_active"] = True
+    hotel_data["created_at"] = get_utc_naive()
+    
+    try:
+        await hotels_collection.insert_one(hotel_data)
+        return {"ok": True, "hotel_id": req.hotel_id, "username": req.username}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Hotel ID or username may already exist")
+
+@app.get("/api/admin/hotels")
+async def list_hotels(user=Depends(require_role("super_admin"))):
+    cursor = hotels_collection.find({})
+    hotels = await cursor.to_list(length=1000)
+    
+    result = []
+    for h in hotels:
+        device_count = await devices_collection.count_documents({"hotel_id": h["_id"]})
+        active_breaches = await devices_collection.count_documents({"hotel_id": h["_id"], "status": "breach"})
+        result.append({
+            "hotel_id": h["_id"],
+            "hotel_name": h.get("hotel_name"),
+            "username": h.get("username"),
+            "subscription_active": h.get("subscription_active", True),
+            "device_count": device_count,
+            "active_breaches": active_breaches
+        })
+    return result
 
 # Device registration with JWT
 @app.post("/api/devices/register")
 async def register_device(payload: DeviceRegister):
     """Register device and return JWT token"""
+    hotel_id = payload.hotelId or "default"
+    if payload.staffUsername:
+        hotel = await hotels_collection.find_one({"username": payload.staffUsername})
+        if hotel:
+            hotel_id = hotel["_id"]
+
     # Use print for immediate visibility in Render logs
     print("="*60, flush=True)
     print(f"📱 NEW DEVICE REGISTRATION", flush=True)
     print(f"   Device ID: {payload.deviceId}", flush=True)
     print(f"   Room ID: {payload.roomId}", flush=True)
-    print(f"   Hotel ID: {payload.hotelId or 'default'}", flush=True)
+    print(f"   Hotel ID: {hotel_id}", flush=True)
     print("="*60, flush=True)
-    
-    logger.info("="*60)
-    logger.info(f"📱 NEW DEVICE REGISTRATION")
-    logger.info(f"   Device ID: {payload.deviceId}")
-    logger.info(f"   Room ID: {payload.roomId}")
-    logger.info(f"   Hotel ID: {payload.hotelId or 'default'}")
-    logger.info("="*60)
     
     device_data = {
         "_id": payload.deviceId,
         "device_id": payload.deviceId,
         "room_id": payload.roomId,
-        "hotel_id": payload.hotelId or "default",
+        "hotel_id": hotel_id,
+        "registered_by": payload.staffUsername,
+        "staff_name": payload.staffName,
         "status": StatusEnum.ok,
         "last_seen": get_utc_naive()
     }
@@ -444,16 +515,8 @@ async def register_device(payload: DeviceRegister):
     token = AuthService.create_device_token(
         device_id=payload.deviceId,
         room_id=payload.roomId,
-        hotel_id=payload.hotelId or "default"
+        hotel_id=hotel_id
     )
-    
-    print(f"✅ Device {payload.deviceId} registered successfully", flush=True)
-    print(f"🔑 JWT Token issued (length: {len(token)} chars)", flush=True)
-    print("="*60, flush=True)
-    
-    logger.info(f"✅ Device {payload.deviceId} registered successfully")
-    logger.info(f"🔑 JWT Token issued (length: {len(token)} chars)")
-    logger.info("="*60)
     
     return {"ok": True, "token": token}
 
@@ -930,10 +993,12 @@ async def acknowledge_all():
 
 # Get recent alerts
 @app.get("/api/alerts/recent")
-async def recent_alerts(limit: int = 100, hotel_id: Optional[str] = None):
+async def recent_alerts(limit: int = 100, hotel_id: Optional[str] = None, user=Depends(get_current_user)):
     """Get recent alerts with optional hotel filter"""
     query = {}
-    if hotel_id:
+    if user["role"] == "hotel_admin":
+        query["hotel_id"] = user["hotel_id"]
+    elif hotel_id:
         query["hotel_id"] = hotel_id
     
     # Optimized query with projection to reduce data transfer
@@ -961,16 +1026,18 @@ async def recent_alerts(limit: int = 100, hotel_id: Optional[str] = None):
 
 # List devices
 @app.get("/api/devices")
-async def list_devices(hotel_id: Optional[str] = None):
+async def list_devices(hotel_id: Optional[str] = None, user=Depends(get_current_user)):
     """List all devices with optional hotel filter"""
     query = {}
-    if hotel_id:
+    if user["role"] == "hotel_admin":
+        query["hotel_id"] = user["hotel_id"]
+    elif hotel_id:
         query["hotel_id"] = hotel_id
     
     # Optimized with projection - include both camelCase and snake_case fields
     cursor = devices_collection.find(
         query,
-        projection={"room_id": 1, "roomId": 1, "hotel_id": 1, "status": 1, "battery": 1, "rssi": 1, "ip": 1, "last_seen": 1}
+        projection={"room_id": 1, "roomId": 1, "hotel_id": 1, "status": 1, "battery": 1, "rssi": 1, "ip": 1, "last_seen": 1, "staff_name": 1, "registered_by": 1}
     )
     devices = await cursor.to_list(length=1000)
     
@@ -985,7 +1052,9 @@ async def list_devices(hotel_id: Optional[str] = None):
         "batteryLevel": d.get("battery"),
         "rssi": d.get("rssi"),
         "ip": d.get("ip"),
-        "lastSeen": to_ist_isoformat(d.get("last_seen"))
+        "lastSeen": to_ist_isoformat(d.get("last_seen")),
+        "staffName": d.get("staff_name"),
+        "registeredBy": d.get("registered_by")
     } for d in devices]
 
 # Delete device (Owner only)
@@ -1238,12 +1307,19 @@ async def sse_endpoint():
 
 # ← NEW: WebSocket endpoint — dashboard connects here for instant push updates
 @app.websocket("/ws/dashboard")
-async def websocket_dashboard(websocket: WebSocket):
+async def websocket_dashboard(websocket: WebSocket, token: Optional[str] = None):
     """Real-time WebSocket endpoint for the dashboard.
     Each dashboard tab that opens creates one persistent connection here.
     The server pushes breach/heartbeat/offline events to all connections instantly.
     """
-    await ws_manager.connect(websocket)  # ← NEW: Register this client
+    hotel_id = "ALL"
+    if token:
+        try:
+            payload = AuthService.verify_token(token)
+            hotel_id = payload.get("hotel_id", "ALL")
+        except:
+            pass
+    await ws_manager.connect(websocket, hotel_id)  # ← NEW: Register this client with hotel_id
     try:
         # ← NEW: Send an immediate welcome message so the frontend knows it's live
         await websocket.send_text(json.dumps({
@@ -1275,9 +1351,16 @@ async def broadcast_event(event_type: str, data: dict):
         "timestamp": get_ist_time().isoformat()
     }
     message_str = json.dumps(message)
+    
+    hotel_id = data.get("hotel_id")
+    if not hotel_id and data.get("deviceId"):
+        device = await devices_collection.find_one({"_id": data["deviceId"]})
+        if device:
+            hotel_id = device.get("hotel_id")
+            data["hotel_id"] = hotel_id
 
-    # ← NEW: Push to ALL connected WebSocket dashboard clients instantly
-    await ws_manager.broadcast(message)
+    # ← NEW: Push to connected WebSocket dashboard clients
+    await ws_manager.broadcast(message, hotel_id)
 
     if redis_client:
         try:

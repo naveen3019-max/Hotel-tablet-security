@@ -62,12 +62,14 @@ class AuthService:
         )
     
     @staticmethod
-    def create_user_token(user_id: str, role: str) -> str:
+    def create_user_token(user_id: str, role: str, hotel_id: str = None, hotel_name: str = None) -> str:
         """Create user JWT token"""
         return AuthService.create_access_token(
             data={
                 "sub": user_id,
                 "role": role,
+                "hotel_id": hotel_id,
+                "hotel_name": hotel_name,
                 "type": "user"
             }
         )
@@ -105,16 +107,18 @@ def get_current_user(token_data: dict = Security(get_current_token)) -> dict:
     
     user_id = token_data.get("sub")
     role = token_data.get("role")
+    hotel_id = token_data.get("hotel_id")
+    hotel_name = token_data.get("hotel_name")
     
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid user token")
     
-    return {"user_id": user_id, "role": role}
+    return {"user_id": user_id, "role": role, "hotel_id": hotel_id, "hotel_name": hotel_name}
 
 def require_role(required_role: str):
     """Dependency factory to require specific role"""
     def role_checker(user: dict = Security(get_current_user)) -> dict:
-        if user["role"] != required_role and user["role"] != "admin":
+        if user["role"] != required_role and user["role"] not in ["admin", "super_admin"]:
             raise HTTPException(status_code=403, detail=f"Role '{required_role}' required")
         return user
     return role_checker

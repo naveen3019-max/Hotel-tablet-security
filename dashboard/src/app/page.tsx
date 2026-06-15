@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuth } from "../hooks/useAuth";
 import LiveIndicator from "../components/LiveIndicator";
@@ -66,7 +67,8 @@ type Toast = {
 };
 
 export default function EnhancedDashboard() {
-  const { isAuthenticated, checking, logout } = useAuth();
+  const { isAuthenticated, checking, logout, user } = useAuth();
+  const router = useRouter();
   const [devices, setDevices] = useState<Device[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [filter, setFilter] = useState<string>("all");
@@ -83,7 +85,7 @@ export default function EnhancedDashboard() {
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
 
-  const { lastMessage, status: connectionStatus } = useWebSocket(API);
+  const { lastMessage, status: connectionStatus } = useWebSocket(API, user?.token || '');
 
   const addToast = useCallback((deviceId: string, roomId?: string, reason?: string) => {
     const id = ++toastIdCounter.current;
@@ -199,9 +201,10 @@ export default function EnhancedDashboard() {
     const fetchAll = async () => {
       try {
         setTimeout(() => setError(null), 0);
+        const headers = { "Authorization": `Bearer ${user?.token}` };
         const [devicesRes, alertsRes] = await Promise.all([
-          fetch(`${API}/api/devices`),
-          fetch(`${API}/api/alerts/recent?limit=100`),
+          fetch(`${API}/api/devices`, { headers }),
+          fetch(`${API}/api/alerts/recent?limit=100`, { headers }),
         ]);
 
         if (!devicesRes.ok || !alertsRes.ok) {
@@ -229,7 +232,7 @@ export default function EnhancedDashboard() {
 
   const handleDeleteDevice = async (deviceId: string) => {
     try {
-      await fetch(`${API}/api/devices/${deviceId}`, { method: 'DELETE' });
+      await fetch(`${API}/api/devices/${deviceId}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${user?.token}` } });
       setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
       setDeleteConfirm(null);
     } catch (e) {
@@ -243,7 +246,7 @@ export default function EnhancedDashboard() {
       if (!deviceId) return;
       await fetch(`${API}/api/alerts/acknowledge`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${user?.token}` },
         body: JSON.stringify({
           device_id: deviceId,
           timestamp: alert.ts,
@@ -260,7 +263,7 @@ export default function EnhancedDashboard() {
 
   const acknowledgeAll = async () => {
     try {
-      await fetch(`${API}/api/alerts/acknowledge-all`, { method: 'POST' });
+      await fetch(`${API}/api/alerts/acknowledge-all`, { method: 'POST', headers: { 'Authorization': `Bearer ${user?.token}` } });
       setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
     } catch (e) {
       console.error("Failed to acknowledge all", e);
@@ -401,8 +404,11 @@ export default function EnhancedDashboard() {
 
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Hotel Tablet Security</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">{user?.hotelName || "Hotel"} Tablet Security</h1>
             <div className="flex flex-wrap items-center gap-4 text-sm mt-1">
+              <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider">
+                {user?.role === 'super_admin' ? 'Super Admin' : 'Hotel Admin'}
+              </span>
               <span className="text-green-600 font-medium">✓ {okCount} secure</span>
               <span className="text-red-500 font-medium">🚨 {breachCount} breach</span>
               <span className="text-gray-400 font-medium">⚫ {offlineCount} offline</span>
@@ -419,6 +425,14 @@ export default function EnhancedDashboard() {
               </button>
             )}
             <div className="flex items-center gap-2">
+              {user?.role === 'super_admin' && (
+                <button
+                  onClick={() => router.push('/admin')}
+                  className="text-xs text-purple-600 hover:text-purple-800 border border-purple-200 hover:border-purple-300 bg-purple-50 px-3 py-1 rounded-full transition-colors font-semibold"
+                >
+                  Admin Panel
+                </button>
+              )}
               <button
                 onClick={logout}
                 className="text-xs text-gray-500 hover:text-red-500 border border-gray-200 hover:border-red-300 px-3 py-1 rounded-full transition-colors"

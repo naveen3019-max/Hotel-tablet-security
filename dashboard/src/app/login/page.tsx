@@ -13,30 +13,44 @@ export default function LoginPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setMounted(true);
-      if (localStorage.getItem('hotel_auth') === 'authenticated') {
+      if (localStorage.getItem('dashboard_token')) {
         router.replace('/');
       }
     }, 0);
     return () => clearTimeout(timer);
   }, [router]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    const validUsername = process.env.NEXT_PUBLIC_ADMIN_USER || 'hotel_admin';
-    const validPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'secure@hotel2024';
+    const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-tablet-security.onrender.com";
 
-    setTimeout(() => {
-      if (username === validUsername && password === validPassword) {
-        localStorage.setItem('hotel_auth', 'authenticated');
-        router.push('/');
-      } else {
-        setError('Invalid username or password. Please try again.');
-        setLoading(false);
+    try {
+      const res = await fetch(`${API}/api/auth/user-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+      });
+      
+      if (!res.ok) {
+        throw new Error('Invalid username or password');
       }
-    }, 600); // Fake delay for smooth UX
+      
+      const data = await res.json();
+      localStorage.setItem('dashboard_token', data.token);
+      localStorage.setItem('dashboard_role', data.role);
+      localStorage.setItem('dashboard_hotel_id', data.hotel_id);
+      localStorage.setItem('dashboard_hotel_name', data.hotel_name);
+      localStorage.setItem('dashboard_name', data.name);
+      localStorage.setItem('dashboard_username', data.username);
+      
+      router.push('/');
+    } catch (err: any) {
+      setError(err.message || 'Invalid username or password. Please try again.');
+      setLoading(false);
+    }
   };
 
   if (!mounted) return null;

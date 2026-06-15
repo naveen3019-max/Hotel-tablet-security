@@ -34,6 +34,8 @@ class ProvisioningActivity : AppCompatActivity() {
 
     private lateinit var deviceIdInput: EditText
     private lateinit var roomIdInput: EditText
+    private lateinit var hotelUsernameInput: EditText
+    private lateinit var staffNameInput: EditText
     private lateinit var backendUrlInput: EditText
     private lateinit var generateIdButton: Button
     private lateinit var registerButton: Button
@@ -132,6 +134,32 @@ class ProvisioningActivity : AppCompatActivity() {
         }
         layout.addView(roomIdInput)
         
+        // Hotel Username
+        val hotelUsernameLabel = TextView(this).apply {
+            text = "Hotel Username:"
+            setPadding(0, 16, 0, 8)
+        }
+        layout.addView(hotelUsernameLabel)
+        
+        hotelUsernameInput = EditText(this).apply {
+            hint = "e.g. hilton_admin"
+            setPadding(16, 16, 16, 16)
+        }
+        layout.addView(hotelUsernameInput)
+
+        // Staff Name
+        val staffNameLabel = TextView(this).apply {
+            text = "Staff Name:"
+            setPadding(0, 16, 0, 8)
+        }
+        layout.addView(staffNameLabel)
+        
+        staffNameInput = EditText(this).apply {
+            hint = "e.g. John Doe"
+            setPadding(16, 16, 16, 16)
+        }
+        layout.addView(staffNameInput)
+        
         // Status
         statusText = TextView(this).apply {
             text = "Enter device details and register"
@@ -215,9 +243,11 @@ class ProvisioningActivity : AppCompatActivity() {
     private fun registerDevice() {
         val deviceId = deviceIdInput.text.toString().trim()
         val roomId = roomIdInput.text.toString().trim()
+        val hotelUsername = hotelUsernameInput.text.toString().trim()
+        val staffName = staffNameInput.text.toString().trim()
         val backendUrl = backendUrlInput.text.toString().trim()
         
-        if (deviceId.isEmpty() || roomId.isEmpty() || backendUrl.isEmpty()) {
+        if (deviceId.isEmpty() || roomId.isEmpty() || hotelUsername.isEmpty() || staffName.isEmpty() || backendUrl.isEmpty()) {
             Toast.makeText(this, "Please fill all fields", Toast.LENGTH_SHORT).show()
             return
         }
@@ -259,7 +289,7 @@ class ProvisioningActivity : AppCompatActivity() {
                 // Register device with backend
                 android.util.Log.d("Provisioning", "Calling register API...")
                 val startTime = System.currentTimeMillis()
-                val registerResponse = repo.register(tempAuth, RegisterRequest(deviceId, roomId))
+                val registerResponse = repo.register(tempAuth, RegisterRequest(deviceId, roomId, hotelUsername, staffName))
                 val duration = (System.currentTimeMillis() - startTime) / 1000.0
                 android.util.Log.d("Provisioning", "Register response received in ${duration}s: $registerResponse")
                 
@@ -281,6 +311,8 @@ class ProvisioningActivity : AppCompatActivity() {
                 prefs.edit()
                     .putString("device_id", deviceId)
                     .putString("room_id", roomId)
+                    .putString("hotel_username", hotelUsername)
+                    .putString("staff_name", staffName)
                     .putString("jwt_token", jwtToken)  // Save JWT token
                     .putString("bssid", bssid)
                     .putString("ssid", ssid)

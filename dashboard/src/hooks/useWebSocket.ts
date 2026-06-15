@@ -8,7 +8,7 @@ export interface WebSocketMessage {
   [key: string]: unknown;
 }
 
-const getWsUrl = (httpUrl: string): string => {
+const getWsUrl = (httpUrl: string, token: string = ''): string => {
     if (!httpUrl) {
         console.error('No API URL configured!')
         return ''
@@ -22,11 +22,12 @@ const getWsUrl = (httpUrl: string): string => {
         ? wsUrl
         : `${wsUrl}/ws/dashboard`
     
-    console.log('[WS] Connecting to:', finalUrl)
-    return finalUrl
+    const urlWithToken = token ? `${finalUrl}?token=${token}` : finalUrl;
+    console.log('[WS] Connecting to:', urlWithToken)
+    return urlWithToken
 }
 
-export function useWebSocket(url: string) {
+export function useWebSocket(url: string, token: string = '') {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
   const [isPollingMode, setIsPollingMode] = useState<boolean>(true); 
@@ -47,7 +48,7 @@ export function useWebSocket(url: string) {
       if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
       setStatus('connecting');
-      const wsUrl = getWsUrl(url);
+      const wsUrl = getWsUrl(url, token);
       if (!wsUrl) return;
       const ws = new WebSocket(wsUrl);
 
@@ -133,7 +134,7 @@ export function useWebSocket(url: string) {
       if (pingTimerRef.current) clearInterval(pingTimerRef.current);
       if (healthCheckRef.current) clearInterval(healthCheckRef.current);
     };
-  }, [url]);
+  }, [url, token]);
 
   return { status, lastMessage, isPollingMode };
 }
