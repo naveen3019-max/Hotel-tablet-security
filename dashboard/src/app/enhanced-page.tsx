@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { useAuth } from "../hooks/useAuth";
 import LiveIndicator from "../components/LiveIndicator";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
@@ -65,6 +66,7 @@ type Toast = {
 };
 
 export default function EnhancedDashboard() {
+  const { isAuthenticated, checking, logout } = useAuth();
   const [devices, setDevices] = useState<Device[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [filter, setFilter] = useState<string>("all");
@@ -347,6 +349,15 @@ export default function EnhancedDashboard() {
     return true;
   });
 
+
+  if (checking) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+    </div>
+  );
+
+  if (!isAuthenticated) return null;
+
   return (
     <main className="min-h-screen bg-gray-50 p-4 sm:p-6">
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
@@ -408,6 +419,12 @@ export default function EnhancedDashboard() {
               </button>
             )}
             <div className="flex items-center gap-2">
+              <button
+                onClick={logout}
+                className="text-xs text-gray-500 hover:text-red-500 border border-gray-200 hover:border-red-300 px-3 py-1 rounded-full transition-colors"
+              >
+                Sign Out
+              </button>
               <span className="text-xs text-gray-400 hidden sm:inline">{DASHBOARD_VERSION}</span>
               <LiveIndicator status={connectionStatus} />
             </div>
