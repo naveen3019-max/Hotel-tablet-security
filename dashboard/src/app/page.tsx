@@ -734,8 +734,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── HEADER ── */}
-      <header style={{
-        height: 64,
+      <header className="app-header" style={{
         background: "rgba(10,15,30,0.95)",
         backdropFilter: "blur(20px)",
         borderBottom: "1px solid #1e2a45",
@@ -1037,8 +1036,7 @@ export default function Dashboard() {
       </main>
 
       {/* ── FOOTER ── */}
-      <footer style={{
-        height: 40,
+      <footer className="app-footer" style={{
         background: "#0a0f1e",
         borderTop: "1px solid #1e2a45",
         padding: "0 24px",
@@ -1115,20 +1113,40 @@ export default function Dashboard() {
 
       {/* Responsive CSS */}
       <style>{`
+        .app-header { height: 64px; }
+        .app-footer { height: 40px; }
         @media (max-width: 1100px) {
           main > div:last-of-type { grid-template-columns: 1fr !important; }
           main > div:first-of-type { grid-template-columns: repeat(2, 1fr) !important; }
+        }
+        @media (max-width: 768px) {
+          .app-header {
+            height: auto !important;
+            min-height: 64px;
+            padding: 12px 16px !important;
+            flex-wrap: wrap;
+            justify-content: space-between;
+          }
+          .app-header > div:nth-child(2) { display: none !important; }
+          .app-header > div:nth-child(3) { margin-left: auto; }
+          .app-footer {
+            height: auto !important;
+            flex-direction: column;
+            gap: 8px;
+            padding: 16px !important;
+            text-align: center;
+          }
         }
         @media (max-width: 700px) {
           main > div:first-of-type { grid-template-columns: 1fr 1fr !important; }
           main > div:last-of-type > div:first-child > div:last-child {
             grid-template-columns: 1fr !important;
           }
-          header { padding: 0 12px !important; gap: 8px !important; }
-          header > div:nth-child(2) { display: none !important; }
         }
         @media (max-width: 480px) {
           main > div:first-of-type { grid-template-columns: 1fr !important; }
+          .app-header > div:nth-child(1) span { display: none; } /* Hide text on very small screens to fit icons */
+          .app-header > div:nth-child(3) { flex-wrap: wrap; justify-content: flex-end; }
         }
         select option { background: #141b2d; color: #f1f5f9; }
       `}</style>
