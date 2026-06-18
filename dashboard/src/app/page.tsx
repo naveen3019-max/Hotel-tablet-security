@@ -666,8 +666,11 @@ export default function Dashboard() {
   });
 
   const filteredAlerts = alerts.filter((a) => {
-    if (alertFilter === "breach") return a.type === "breach";
+    if (alertFilter === "breach") return a.type === "breach" || (a.payload && (a.payload as any).type === "breach");
     if (alertFilter === "unread") return !a.acknowledged;
+    if (alertFilter === "offline") return a.type === "offline" || a.type === "device_offline";
+    if (alertFilter === "low_battery") return a.type === "low_battery";
+    if (alertFilter === "online") return a.type === "online" || a.type === "device_recovered";
     return true;
   });
 
@@ -694,6 +697,15 @@ export default function Dashboard() {
   const connLabel =
     connectionStatus === "connected"     ? "LIVE" :
     connectionStatus === "connecting"    ? "CONNECTING" : "OFFLINE";
+
+  const alertTabs = [
+    { id: "all", label: "All" },
+    { id: "unread", label: "Unread" },
+    { id: "breach", label: "Breach" },
+    { id: "low_battery", label: "Low Battery" },
+    { id: "online", label: "Online" },
+    { id: "offline", label: "Offline" },
+  ];
 
   return (
     <div style={{ minHeight: "100vh", background: "#0a0f1e", display: "flex", flexDirection: "column" }}>
@@ -977,7 +989,7 @@ export default function Dashboard() {
           {/* ── RIGHT: Alerts ── */}
           <div>
             {/* Section header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <h2 style={{ fontSize: 18, fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Security Alerts</h2>
                 {unackCount > 0 && (
@@ -987,25 +999,24 @@ export default function Dashboard() {
                 )}
               </div>
               {/* Tabs */}
-              <div style={{ display: "flex", gap: 4 }}>
-                {["all", "unread", "breach"].map((tab) => (
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 280 }}>
+                {alertTabs.map((tab) => (
                   <button
-                    key={tab}
-                    onClick={() => { setAlertFilter(tab); setVisibleAlertsCount(50); }}
+                    key={tab.id}
+                    onClick={() => { setAlertFilter(tab.id); setVisibleAlertsCount(50); }}
                     style={{
-                      background: alertFilter === tab ? "#1e2a45" : "none",
-                      border: `1px solid ${alertFilter === tab ? "#2d3f60" : "#1e2a45"}`,
+                      background: alertFilter === tab.id ? "#1e2a45" : "none",
+                      border: `1px solid ${alertFilter === tab.id ? "#2d3f60" : "#1e2a45"}`,
                       borderRadius: 8,
                       padding: "4px 10px",
-                      color: alertFilter === tab ? "#f1f5f9" : "#475569",
+                      color: alertFilter === tab.id ? "#f1f5f9" : "#475569",
                       fontSize: 11,
                       fontWeight: 600,
                       cursor: "pointer",
-                      textTransform: "capitalize",
                       transition: "background 0.2s, color 0.2s",
                     }}
                   >
-                    {tab}
+                    {tab.label}
                   </button>
                 ))}
               </div>
