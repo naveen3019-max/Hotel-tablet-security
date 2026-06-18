@@ -101,6 +101,25 @@ export default function AdminPage() {
     }
   };
 
+  const handleToggleStatus = async (hotelId: string) => {
+    try {
+      const res = await fetch(`${API}/api/admin/hotels/${hotelId}/toggle-status`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${user?.token}` }
+      });
+      if (!res.ok) throw new Error("Failed to toggle status");
+      
+      setHotels(hotels.map(h => {
+        if (h.hotel_id === hotelId) {
+          return { ...h, subscription_active: !h.subscription_active };
+        }
+        return h;
+      }));
+    } catch (err) {
+      alert("Error updating user status: " + (err as Error).message);
+    }
+  };
+
   if (checking || loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -244,15 +263,27 @@ export default function AdminPage() {
                           <span className="text-slate-400">User:</span> {h.username}
                         </div>
                       </div>
-                      <div className="flex gap-4 sm:gap-6 bg-slate-50 px-4 py-2 rounded-lg border border-slate-100 w-full sm:w-auto justify-between sm:justify-end">
-                        <div className="text-center">
-                          <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-0.5">Devices</div>
-                          <div className="font-semibold text-slate-900">{h.device_count}</div>
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 sm:gap-6 w-full sm:w-auto justify-between sm:justify-end">
+                        <div className="flex gap-6 bg-slate-50 px-4 py-2 rounded-lg border border-slate-100 justify-center">
+                          <div className="text-center">
+                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-0.5">Devices</div>
+                            <div className="font-semibold text-slate-900">{h.device_count}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-0.5">Breaches</div>
+                            <div className={`font-bold ${h.active_breaches > 0 ? 'text-red-600' : 'text-slate-900'}`}>{h.active_breaches}</div>
+                          </div>
                         </div>
-                        <div className="text-center">
-                          <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-0.5">Breaches</div>
-                          <div className={`font-bold ${h.active_breaches > 0 ? 'text-red-600' : 'text-slate-900'}`}>{h.active_breaches}</div>
-                        </div>
+                        <button
+                          onClick={() => handleToggleStatus(h.hotel_id)}
+                          className={`text-xs px-4 py-2 rounded-lg font-bold transition-all whitespace-nowrap ${
+                            h.subscription_active 
+                              ? 'bg-red-50 text-red-600 hover:bg-red-100 border border-red-200' 
+                              : 'bg-green-50 text-green-600 hover:bg-green-100 border border-green-200'
+                          }`}
+                        >
+                          {h.subscription_active ? 'Block User' : 'Unblock User'}
+                        </button>
                       </div>
                     </div>
                   ))

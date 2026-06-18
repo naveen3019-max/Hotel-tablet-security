@@ -476,6 +476,19 @@ async def list_hotels(user=Depends(require_role("super_admin"))):
         })
     return result
 
+@app.post("/api/admin/hotels/{hotel_id}/toggle-status")
+async def toggle_hotel_status(hotel_id: str, user=Depends(require_role("super_admin"))):
+    hotel = await hotels_collection.find_one({"_id": hotel_id})
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    
+    new_status = not hotel.get("subscription_active", True)
+    await hotels_collection.update_one(
+        {"_id": hotel_id}, 
+        {"$set": {"subscription_active": new_status}}
+    )
+    return {"ok": True, "subscription_active": new_status}
+
 # Device registration with JWT
 @app.post("/api/devices/register")
 async def register_device(payload: DeviceRegister):
