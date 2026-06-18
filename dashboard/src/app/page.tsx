@@ -45,6 +45,8 @@ type Device = {
   rssi?: number;
   lastSeen?: string;
   ip?: string;
+  registeredBy?: string;
+  staffName?: string;
 };
 
 type Alert = {
@@ -190,6 +192,8 @@ export default function EnhancedDashboard() {
   }, [lastMessage, addToast]);
 
   useEffect(() => {
+    if (!isAuthenticated || !user?.token) return;
+
     if (!API) {
       setTimeout(() => {
         setError("API URL not configured");
@@ -201,7 +205,7 @@ export default function EnhancedDashboard() {
     const fetchAll = async () => {
       try {
         setTimeout(() => setError(null), 0);
-        const headers = { "Authorization": `Bearer ${user?.token}` };
+        const headers = { "Authorization": `Bearer ${user.token}` };
         const [devicesRes, alertsRes] = await Promise.all([
           fetch(`${API}/api/devices`, { headers }),
           fetch(`${API}/api/alerts/recent?limit=100`, { headers }),
@@ -228,7 +232,7 @@ export default function EnhancedDashboard() {
     fetchAll();
     const pollId = setInterval(fetchAll, 10000);
     return () => clearInterval(pollId);
-  }, []);
+  }, [isAuthenticated, user?.token]);
 
   const handleDeleteDevice = async (deviceId: string) => {
     try {
@@ -361,6 +365,13 @@ export default function EnhancedDashboard() {
 
   if (!isAuthenticated) return null;
 
+  if (user?.role === 'super_admin') {
+    if (typeof window !== 'undefined') {
+      router.replace('/admin');
+    }
+    return null;
+  }
+
   return (
     <main className="min-h-screen bg-gray-50 p-4 sm:p-6">
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
@@ -485,6 +496,11 @@ export default function EnhancedDashboard() {
                         {d.deviceId}
                       </h3>
                       <p className="text-sm text-gray-600 font-medium">Room {d.roomId || "—"}</p>
+                      {(d.registeredBy || d.staffName) && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Registered by: <span className="font-medium text-gray-700">{d.staffName || d.registeredBy}</span>
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <button
