@@ -703,8 +703,6 @@ export default function Dashboard() {
     { id: "unread", label: "Unread" },
     { id: "breach", label: "Breach" },
     { id: "low_battery", label: "Low Battery" },
-    { id: "online", label: "Online" },
-    { id: "offline", label: "Offline" },
   ];
 
   return (
@@ -852,6 +850,14 @@ export default function Dashboard() {
             glow="rgba(34,197,94,0.15)"
           />
           <StatCard
+            icon={<WifiOffIcon color="#f59e0b" size={22} />}
+            value={offlineCount}
+            label="Devices Offline"
+            sub="Last seen recently"
+            accent="#f59e0b"
+            glow="rgba(245,158,11,0.15)"
+          />
+          <StatCard
             icon={<AlertTriangleIcon color="#ef4444" size={22} />}
             value={breachCount}
             label="Active Breaches"
@@ -859,14 +865,6 @@ export default function Dashboard() {
             accent="#ef4444"
             glow="rgba(239,68,68,0.15)"
             pulseBorder
-          />
-          <StatCard
-            icon={<WifiOffIcon color="#f59e0b" size={22} />}
-            value={offlineCount}
-            label="Devices Offline"
-            sub="Last seen recently"
-            accent="#f59e0b"
-            glow="rgba(245,158,11,0.15)"
           />
         </div>
 
