@@ -7,12 +7,10 @@ export default function DashboardSwitcher() {
   const [isWebView, setIsWebView] = useState<boolean | null>(null);
 
   useEffect(() => {
-    // Detect if we're in an Android WebView (e.g. from the APK)
-    // Often "wv" or "Version/4.0 Chrome/" are indicators of WebView
-    const ua = navigator.userAgent || navigator.vendor || (window as unknown as { opera?: string }).opera;
+    const ua = navigator.userAgent || navigator.vendor || (window as unknown as { opera?: string }).opera || "";
     const isWv = 
-      (ua?.indexOf('wv') > -1) || 
-      (ua?.indexOf('Android') > -1 && ua?.indexOf('Version/') > -1);
+      (ua.indexOf('wv') > -1) || 
+      (ua.indexOf('Android') > -1 && ua.indexOf('Version/') > -1);
     
     // Check local storage or URL query for testing override as well
     const urlParams = new URLSearchParams(window.location.search);
