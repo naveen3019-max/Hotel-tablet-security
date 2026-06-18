@@ -286,8 +286,8 @@ function DeviceCard({
   d: Device;
   onDelete: (id: string) => void;
 }) {
-  const isBreach  = d.status === "breach";
   const isOffline = isDeviceOffline(d);
+  const isBreach  = d.status === "breach" && !isOffline;
   const isOk      = !isBreach && !isOffline;
 
   const borderColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
@@ -660,7 +660,7 @@ export default function Dashboard() {
 
   // ── Derived stats ──
   const okCount      = devices.filter((d) => d.status === "ok" && !isDeviceOffline(d)).length;
-  const breachCount  = devices.filter((d) => d.status === "breach").length;
+  const breachCount  = devices.filter((d) => d.status === "breach" && !isDeviceOffline(d)).length;
   const offlineCount = devices.filter((d) => isDeviceOffline(d)).length;
   const unackCount   = alerts.filter((a) => !a.acknowledged).length;
 
@@ -668,7 +668,7 @@ export default function Dashboard() {
     if (!d?.deviceId) return false;
     const offline = isDeviceOffline(d);
     if (filter === "ok"      && (d.status !== "ok" || offline)) return false;
-    if (filter === "breach"  && d.status !== "breach") return false;
+    if (filter === "breach"  && (d.status !== "breach" || offline)) return false;
     if (filter === "offline" && !offline) return false;
     if (filter === "low_battery" && (d.battery === undefined || d.battery > 20)) return false;
     if (searchQuery && !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) && !(d.roomId && d.roomId.toString().toLowerCase().includes(searchQuery.toLowerCase()))) return false;
