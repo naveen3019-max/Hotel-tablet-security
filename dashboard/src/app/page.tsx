@@ -63,6 +63,15 @@ const timeAgo = (dateString?: string): { text: string; level: "ok" | "warn" | "d
   return { text: `${Math.round(diff/3600)}h ago`, level: "danger" };
 };
 
+const isDeviceOffline = (d: Device): boolean => {
+  if (d.status === "offline" || d.rssi === -127) return true;
+  if (d.lastSeen) {
+    const diff = (Date.now() - new Date(d.lastSeen).getTime()) / 1000;
+    if (diff > 7200) return true; // 2 hours
+  }
+  return false;
+};
+
 const getBatteryColor = (b?: number) => {
   if (b === undefined) return "#475569";
   if (b > 50) return "#22c55e";
@@ -278,7 +287,7 @@ function DeviceCard({
   onDelete: (id: string) => void;
 }) {
   const isBreach  = d.status === "breach";
-  const isOffline = d.status === "offline" || d.rssi === -127;
+  const isOffline = isDeviceOffline(d);
   const isOk      = !isBreach && !isOffline;
 
   const borderColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
@@ -650,16 +659,17 @@ export default function Dashboard() {
   };
 
   // ── Derived stats ──
-  const okCount      = devices.filter((d) => d.status === "ok" && d.rssi !== -127).length;
+  const okCount      = devices.filter((d) => d.status === "ok" && !isDeviceOffline(d)).length;
   const breachCount  = devices.filter((d) => d.status === "breach").length;
-  const offlineCount = devices.filter((d) => d.status === "offline" || d.rssi === -127).length;
+  const offlineCount = devices.filter((d) => isDeviceOffline(d)).length;
   const unackCount   = alerts.filter((a) => !a.acknowledged).length;
 
   const filteredDevices = devices.filter((d) => {
     if (!d?.deviceId) return false;
-    if (filter === "ok"      && d.status !== "ok") return false;
+    const offline = isDeviceOffline(d);
+    if (filter === "ok"      && (d.status !== "ok" || offline)) return false;
     if (filter === "breach"  && d.status !== "breach") return false;
-    if (filter === "offline" && d.status !== "offline" && d.rssi !== -127) return false;
+    if (filter === "offline" && !offline) return false;
     if (filter === "low_battery" && (d.battery === undefined || d.battery > 20)) return false;
     if (searchQuery && !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) && !(d.roomId && d.roomId.toString().toLowerCase().includes(searchQuery.toLowerCase()))) return false;
     return true;
