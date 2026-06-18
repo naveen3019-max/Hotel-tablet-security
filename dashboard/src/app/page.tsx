@@ -770,7 +770,7 @@ export default function Dashboard() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <ShieldIcon size={24} />
           <span style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", letterSpacing: "2px", textTransform: "uppercase" }}>
-            Hotel Security
+            Verbena Tech
           </span>
           <div style={{ width: 1, height: 24, background: "#1e2a45" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "#f1f5f9" }}>
@@ -1062,12 +1062,19 @@ export default function Dashboard() {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 8,
       }}>
-        <span style={{ fontSize: 11, color: "#475569" }}>Hotel Security System v2.0</span>
+        <span style={{ fontSize: 11, color: "#475569" }}>Verbena Tech Security System v2.0</span>
         <span style={{ fontSize: 11, color: "#475569" }}>
           Last updated: <LiveClock />
         </span>
-        <span style={{ fontSize: 11, color: "#475569" }}>Powered by Hotel Security • All rights reserved</span>
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: "#475569" }}>Powered by Verbena Tech • All rights reserved</span>
+          <span style={{ fontSize: 11, color: "#475569" }}>
+            Contact: <a href="mailto:sivakk@verbenatech.in" style={{ color: "#3b82f6", textDecoration: "none" }}>sivakk@verbenatech.in</a>
+          </span>
+        </div>
       </footer>
 
       {/* ── DELETE CONFIRM MODAL ── */}

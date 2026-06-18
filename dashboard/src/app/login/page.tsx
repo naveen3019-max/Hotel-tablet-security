@@ -76,7 +76,7 @@ export default function LoginPage() {
               </svg>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-2">
-              Veberna Tech
+              Verbena Tech
             </h1>
             <p className="text-slate-400 text-sm font-medium tracking-wide">
               SECURE FLEET MANAGEMENT
@@ -151,7 +151,8 @@ export default function LoginPage() {
         
         {/* Footer */}
         <p className="text-center text-slate-600 text-xs mt-8 font-medium tracking-wide">
-          &copy; {new Date().getFullYear()} Veberna Tech. All rights reserved.
+          &copy; {new Date().getFullYear()} Verbena Tech. All rights reserved.<br/>
+          Contact: <a href="mailto:sivakk@verbenatech.in" className="text-blue-500 hover:text-blue-400 transition-colors">sivakk@verbenatech.in</a>
         </p>
       </div>
       
