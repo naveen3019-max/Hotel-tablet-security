@@ -445,7 +445,7 @@ async def create_user_token(username: str = Body(...), password: str = Body(...)
 
 @app.post("/api/admin/create-hotel")
 async def create_hotel(req: CreateHotelRequest, user=Depends(require_role("super_admin"))):
-    hotel_data = req.dict(by_alias=True)
+    hotel_data = req.model_dump(by_alias=True)
     hotel_data["_id"] = req.hotel_id
     hotel_data["role"] = "hotel_admin"
     hotel_data["subscription_active"] = True

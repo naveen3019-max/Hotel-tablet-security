@@ -1,5 +1,5 @@
 from fastapi import WebSocket
-from typing import List
+from typing import List, Optional
 import json
 import logging
 
@@ -28,7 +28,7 @@ class ConnectionManager:
             f"📡 WS client disconnected. Total connections: {len(self.active_connections)}"
         )
 
-    async def broadcast(self, message: dict, hotel_id: str = None):
+    async def broadcast(self, message: dict, hotel_id: Optional[str] = None):
         """
         Send a JSON message to connected dashboard clients.
         If hotel_id is provided, only send to that hotel and super_admins (ALL).
