@@ -41,9 +41,11 @@ export default function AdminPage() {
       router.replace('/');
       return;
     }
-
-    fetchHotels();
-  }, [checking, isAuthenticated, user, router]);
+    if (user?.role === "super_admin") {
+      fetchHotels();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking, isAuthenticated, router, user]);
 
   const fetchHotels = async () => {
     try {
@@ -53,8 +55,8 @@ export default function AdminPage() {
       if (!res.ok) throw new Error("Failed to fetch hotels");
       const data = await res.json();
       setHotels(data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError((err as Error).message);
     } finally {
       setLoading(false);
     }
@@ -92,8 +94,8 @@ export default function AdminPage() {
       setUsername("");
       setPassword("");
       fetchHotels(); // Refresh list
-    } catch (err: any) {
-      setCreateError(err.message);
+    } catch (err: unknown) {
+      setCreateError((err as Error).message);
     } finally {
       setCreating(false);
     }

@@ -47,8 +47,8 @@ export default function LoginPage() {
       localStorage.setItem('dashboard_username', data.username);
       
       router.push('/');
-    } catch (err: any) {
-      setError(err.message || 'Invalid username or password. Please try again.');
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Invalid username or password. Please try again.');
       setLoading(false);
     }
   };
