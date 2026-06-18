@@ -666,7 +666,7 @@ export default function Dashboard() {
   });
 
   const filteredAlerts = alerts.filter((a) => {
-    if (alertFilter === "breach") return a.type === "breach" || (a.payload && (a.payload as any).type === "breach");
+    if (alertFilter === "breach") return a.type === "breach" || (a.payload && (a.payload as Record<string, unknown>).type === "breach");
     if (alertFilter === "unread") return !a.acknowledged;
     if (alertFilter === "offline") return a.type === "offline" || a.type === "device_offline";
     if (alertFilter === "low_battery") return a.type === "low_battery";
