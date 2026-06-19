@@ -493,7 +493,17 @@ async def toggle_hotel_status(hotel_id: str, user=Depends(require_role("super_ad
 @app.post("/api/devices/register")
 async def register_device(payload: DeviceRegister):
     """Register device and return JWT token"""
-    hotel_id = payload.hotelId or "default"
+    
+    # Fetch existing device to preserve fields during re-registration
+    existing_device = await devices_collection.find_one({"_id": payload.deviceId})
+    
+    hotel_id = "default"
+    if existing_device and existing_device.get("hotel_id"):
+        hotel_id = existing_device.get("hotel_id")
+        
+    if payload.hotelId:
+        hotel_id = payload.hotelId
+        
     if payload.staffUsername:
         hotel = await hotels_collection.find_one({"username": payload.staffUsername})
         if hotel:
@@ -512,11 +522,19 @@ async def register_device(payload: DeviceRegister):
         "device_id": payload.deviceId,
         "room_id": payload.roomId,
         "hotel_id": hotel_id,
-        "registered_by": payload.staffUsername,
-        "staff_name": payload.staffName,
         "status": StatusEnum.ok,
         "last_seen": get_utc_naive()
     }
+    
+    if payload.staffUsername:
+        device_data["registered_by"] = payload.staffUsername
+    elif existing_device and "registered_by" in existing_device:
+        device_data["registered_by"] = existing_device["registered_by"]
+        
+    if payload.staffName:
+        device_data["staff_name"] = payload.staffName
+    elif existing_device and "staff_name" in existing_device:
+        device_data["staff_name"] = existing_device["staff_name"]
     
     await devices_collection.update_one(
         {"_id": payload.deviceId},
