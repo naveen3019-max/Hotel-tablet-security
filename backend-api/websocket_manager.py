@@ -1,5 +1,5 @@
 from fastapi import WebSocket
-from typing import List, Optional
+from typing import List, Dict, Optional
 import json
 import logging
 
@@ -9,29 +9,32 @@ class ConnectionManager:
     """Manages all active WebSocket connections from dashboard clients."""
 
     def __init__(self):
-        # Store connections as dict: websocket -> hotel_id
-        self.active_connections: dict[WebSocket, str] = {}
+        # ← FIXED: Track hotel_id per connection
+        # Instead of flat list, use dict mapping connection -> hotel_id
+        self.active_connections: Dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket, hotel_id: str):
-        """Accept a new WebSocket connection and register it."""
+    async def connect(self, websocket: WebSocket, hotel_id: str = "unknown"):
+        """Accept connection and tag with hotel_id"""
         await websocket.accept()
+        # ← FIXED: Store hotel_id with connection
         self.active_connections[websocket] = hotel_id
         logger.info(
-            f"📡 WS client connected (hotel: {hotel_id}). Total connections: {len(self.active_connections)}"
+            f"📡 WS client connected for hotel={hotel_id}. Total: {len(self.active_connections)}"
         )
 
     def disconnect(self, websocket: WebSocket):
-        """Remove a WebSocket from the active list when it closes."""
+        """Remove connection"""
         if websocket in self.active_connections:
             del self.active_connections[websocket]
         logger.info(
-            f"📡 WS client disconnected. Total connections: {len(self.active_connections)}"
+            f"📡 WS client disconnected. Total: {len(self.active_connections)}"
         )
 
-    async def broadcast(self, message: dict, hotel_id: Optional[str] = None):
+    async def broadcast(self, message: dict, target_hotel_id: str = None):
         """
-        Send a JSON message to connected dashboard clients.
-        If hotel_id is provided, only send to that hotel and super_admins (ALL).
+        ← FIXED: Broadcast ONLY to clients belonging to target_hotel_id.
+        If target_hotel_id is None, broadcasts to super_admin connections only (hotel_id="ALL")
+        plus the specific hotel if provided.
         """
         if not self.active_connections:
             return
@@ -41,9 +44,17 @@ class ConnectionManager:
         
         # ← FIXED: Track successful broadcasts and handle dead connections without crashing
         success_count = 0
+        
         for connection, conn_hotel_id in list(self.active_connections.items()):
-            # Filter by hotel_id
-            if hotel_id and conn_hotel_id != "ALL" and conn_hotel_id != hotel_id:
+            # ← FIXED: Only send if:
+            # 1. Connection is super_admin (hotel_id="ALL")
+            # 2. OR connection's hotel matches target
+            should_send = (
+                conn_hotel_id == "ALL" or
+                conn_hotel_id == target_hotel_id
+            )
+            
+            if not should_send:
                 continue
 
             try:
@@ -59,6 +70,6 @@ class ConnectionManager:
             self.disconnect(dead)
             
         # ← FIXED: Log how many clients received the broadcast
-        print(f"📡 Broadcast to {success_count} WebSocket clients (target: {hotel_id})", flush=True)
+        print(f"📡 Broadcast to {success_count} clients for hotel={target_hotel_id}", flush=True)
 
 manager = ConnectionManager()

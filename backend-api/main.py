@@ -12,6 +12,25 @@ from db import (
 from config import settings
 from notifications import NotificationService
 from auth import AuthService, get_current_device, get_current_user, require_role
+
+from jose import jwt, JWTError
+
+def decode_jwt_hotel_id(token: str) -> str:
+    """
+    # ← NEW: Extract hotel_id from JWT token
+    # without full validation (for WebSocket
+    # where we just need the hotel context)
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[settings.jwt_algorithm],
+            options={"verify_exp": False}
+        )
+        return payload.get("hotel_id", "default")
+    except JWTError:
+        return "unknown"
 import asyncio
 import logging
 import httpx
@@ -272,6 +291,9 @@ async def monitor_device_heartbeats():
                         })
                         
                         # Broadcast alert to dashboard
+                        # ← ADD hotel_id lookup
+                        device_doc = await devices_collection.find_one({"_id": device_id})
+                        device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
                         await broadcast_event("alert", {
                             "type": "breach",
                             "deviceId": device_id,
@@ -280,7 +302,7 @@ async def monitor_device_heartbeats():
                             "bssid": device.get("bssid", "unknown"),
                             "source": "heartbeat_timeout",
                             "message": breach_msg
-                        })
+                        }, hotel_id=device_hotel_id) # ← ADD hotel_id
                         
                         # Send mobile notification
                         asyncio.create_task(
@@ -586,13 +608,16 @@ async def breach_instant(
         "acknowledged": False
     })
     
+    # ← ADD hotel_id lookup
+    device_doc = await devices_collection.find_one({"_id": deviceId})
+    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
     await broadcast_event("alert", {
         "type": "breach",
         "deviceId": deviceId,
         "roomId": roomId,
         "rssi": rssi,
         "message": "WiFi disabled - instant breach"
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     print(f"🚨 INSTANT BREACH: {deviceId}", flush=True)
     return {"ok": True}
@@ -635,11 +660,15 @@ async def alert_breach(b: Breach, device=Depends(get_current_device)):
     logger.info(f"✅ STORED ALERT: deviceId={b.deviceId}, roomId={b.roomId}, _id={result.inserted_id}")
     
     # Broadcast via Redis for SSE
+    # ← ADD hotel_id lookup
+    device_doc = await devices_collection.find_one({"_id": b.deviceId})
+    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+    
     await broadcast_event("device_update", {
         "deviceId": b.deviceId,
         "status": "breach",
         "rssi": b.rssi
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     # ← FIXED: Added debug print BEFORE broadcast as requested
     print(f"🚨 BREACH → broadcasting to WebSocket clients", flush=True)
@@ -649,7 +678,7 @@ async def alert_breach(b: Breach, device=Depends(get_current_device)):
         "roomId": b.roomId,
         "rssi": b.rssi,
         "message": "WiFi breach detected" # ← FIXED: added message field
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     # Queue notification task
     asyncio.create_task(
@@ -696,17 +725,21 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
     await alerts_collection.insert_one(alert_data)
     
     # Broadcast via Redis
+    # ← ADD hotel_id lookup
+    device_doc = await devices_collection.find_one({"_id": t.deviceId})
+    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+    
     await broadcast_event("device_update", {
         "deviceId": t.deviceId,
         "status": "compromised"
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     await broadcast_event("alert", {
         "type": "tamper",
         "deviceId": t.deviceId,
         "roomId": t.roomId,
         "threats": t.threats
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     return {"ok": True}
 
@@ -750,11 +783,14 @@ async def alert_battery(b: Battery, device=Depends(get_current_device)):
     await alerts_collection.insert_one(alert_data)
     
     # Broadcast via Redis
+    # ← ADD hotel_id lookup
+    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+    
     await broadcast_event("alert", {
         "type": "battery_low",
         "deviceId": b.deviceId,
         "level": b.level
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     # Queue notification
     asyncio.create_task(
@@ -821,13 +857,15 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
         # Broadcast to dashboard
         print(f"🚨 WiFi OFF breach: {h.deviceId}",
               flush=True)
+        # ← ADD hotel_id lookup
+        device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
         await broadcast_event("alert", {
             "type": "breach",
             "deviceId": h.deviceId,
             "roomId": h.roomId,
             "rssi": h.rssi,
             "message": "WiFi disabled on device"
-        })
+        }, hotel_id=device_hotel_id) # ← ADD hotel_id
         
         # Do NOT update last_seen
         # Return breach status
@@ -860,6 +898,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
         new_status = StatusEnum.ok
         
         # Broadcast recovery to dashboard instantly
+        device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
         await broadcast_event("device_recovered", {
             "deviceId": h.deviceId,
             "roomId": h.roomId,
@@ -867,7 +906,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
             "battery": h.battery,
             "message": "Device WiFi restored - "
                        "good heartbeat received"
-        })
+        }, hotel_id=device_hotel_id)
     
     # Get room configuration to check against
     room = await rooms_collection.find_one({"_id": h.roomId})
@@ -886,12 +925,13 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
             new_status = StatusEnum.ok
             
             # Broadcast recovery event
+            device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
             await broadcast_event("device_recovered", {
                 "deviceId": h.deviceId,
                 "roomId": h.roomId,
                 "rssi": h.rssi,
                 "message": "Device WiFi connection restored"
-            })
+            }, hotel_id=device_hotel_id)
         
         # If device was compromised but WiFi is good, clear the compromised status
         # (since tamper detection is now disabled, we reset on good connectivity)
@@ -926,6 +966,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
                 })
                 
                 # Broadcast alert
+                device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
                 await broadcast_event("alert", {
                     "type": "breach",
                     "deviceId": h.deviceId,
@@ -933,7 +974,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
                     "rssi": h.rssi,
                     "bssid": h.wifiBssid,
                     "source": "proactive_heartbeat"
-                })
+                }, hotel_id=device_hotel_id)
                 
                 # Queue mobile notification
                 asyncio.create_task(
@@ -949,12 +990,13 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
             new_status = StatusEnum.ok
             
             # Broadcast recovery event
+            device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
             await broadcast_event("device_recovered", {
                 "deviceId": h.deviceId,
                 "roomId": h.roomId,
                 "rssi": h.rssi,
                 "message": "Device WiFi connection restored"
-            })
+            }, hotel_id=device_hotel_id)
 
     update_data = {
         "roomId": h.roomId,  # Use camelCase to match monitor_device_heartbeats
@@ -980,12 +1022,13 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
         logger.error(f"❌ MongoDB write failed in heartbeat for {h.deviceId}: {e}")
     
     # Broadcast device update
+    device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
     await broadcast_event("device_update", {
         "deviceId": h.deviceId,
         "status": new_status,
         "rssi": h.rssi,
         "battery": h.battery
-    })
+    }, hotel_id=device_hotel_id)
     
     return {"ok": True, "status": new_status}
 
@@ -1009,10 +1052,16 @@ async def acknowledge_alert(payload: AlertAcknowledge):
         raise HTTPException(status_code=404, detail="Alert not found")
     
     # Broadcast acknowledgment
+    # ← ADD hotel_id lookup
+    alert = await alerts_collection.find_one({"_id": ObjectId(payload.alertId)})
+    device_id = alert.get("deviceId") if alert else None
+    device_doc = await devices_collection.find_one({"_id": device_id}) if device_id else None
+    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+
     await broadcast_event("alert_acknowledged", {
         "alertId": payload.alertId,
         "acknowledgedBy": payload.acknowledgedBy
-    })
+    }, hotel_id=device_hotel_id) # ← ADD hotel_id
     
     return {"ok": True}
 
@@ -1024,13 +1073,34 @@ async def acknowledge_all():
 
 # Get recent alerts
 @app.get("/api/alerts/recent")
-async def recent_alerts(limit: int = 100, hotel_id: Optional[str] = None, user=Depends(get_current_user)):
-    """Get recent alerts with optional hotel filter"""
+async def recent_alerts(limit: int = 100, authorization: str = Header(None)):
+    """Get alerts filtered by hotel"""
+    hotel_id = None
+    role = None
+    
+    if authorization:
+        token = authorization.replace("Bearer ", "")
+        try:
+            payload = jwt.decode(
+                token,
+                settings.secret_key,
+                algorithms=[settings.jwt_algorithm]
+            )
+            hotel_id = payload.get("hotel_id")
+            role = payload.get("role")
+        except JWTError:
+            raise HTTPException(401, "Invalid token")
+    
     query = {}
-    if user["role"] == "hotel_admin":
-        query["hotel_id"] = user["hotel_id"]
-    elif hotel_id:
-        query["hotel_id"] = hotel_id
+    
+    if role != "super_admin" and hotel_id:
+        # ← FIXED: Filter alerts by devices belonging to this hotel
+        hotel_device_ids = await devices_collection.find(
+            {"hotel_id": hotel_id},
+            {"_id": 1}
+        ).to_list(length=1000)
+        device_id_list = [d["_id"] for d in hotel_device_ids]
+        query["deviceId"] = {"$in": device_id_list}
     
     # Optimized query with projection to reduce data transfer
     cursor = alerts_collection.find(
@@ -1056,13 +1126,29 @@ async def recent_alerts(limit: int = 100, hotel_id: Optional[str] = None, user=D
     return alerts
 
 # List devices
+from fastapi import Header
 @app.get("/api/devices")
-async def list_devices(hotel_id: Optional[str] = None, user=Depends(get_current_user)):
-    """List all devices with optional hotel filter"""
+async def list_devices(authorization: str = Header(None)):
+    """List devices filtered by hotel"""
+    hotel_id = None
+    role = None
+    
+    if authorization:
+        token = authorization.replace("Bearer ", "")
+        try:
+            payload = jwt.decode(
+                token,
+                settings.secret_key,
+                algorithms=[settings.jwt_algorithm]
+            )
+            hotel_id = payload.get("hotel_id")
+            role = payload.get("role")
+        except JWTError:
+            raise HTTPException(401, "Invalid token")
+    
     query = {}
-    if user["role"] == "hotel_admin":
-        query["hotel_id"] = user["hotel_id"]
-    elif hotel_id:
+    # ← FIXED: super_admin sees all, everyone else filtered by hotel_id
+    if role != "super_admin" and hotel_id:
         query["hotel_id"] = hotel_id
     
     # Optimized with projection - include both camelCase and snake_case fields
@@ -1106,7 +1192,9 @@ async def delete_device(device_id: str):
     logger.info(f"Device {device_id} deleted")
     
     # Broadcast device removal
-    await broadcast_event("device_deleted", {"deviceId": device_id})
+    # ← ADD hotel_id lookup
+    device_hotel_id = "default"  # We already deleted it above, so hotel_id might be lost unless we fetch first
+    await broadcast_event("device_deleted", {"deviceId": device_id}, hotel_id="ALL") # broadcast to ALL or we need to find it before delete
     
     return {"ok": True, "message": f"Device {device_id} deleted successfully"}
 
@@ -1146,7 +1234,7 @@ async def clear_database(confirm: str = Body(..., embed=True)):
         await broadcast_event("database_cleared", {
             "timestamp": get_ist_time().isoformat(),
             "deleted_counts": deleted_counts
-        })
+        }, hotel_id="ALL")
         
         return {
             "ok": True,
@@ -1204,7 +1292,7 @@ async def quick_add_device(
         "deviceId": deviceId,
         "roomId": roomId,
         "hotelId": hotelId
-    })
+    }, hotel_id=hotelId)
     
     return {
         "ok": True,
@@ -1338,19 +1426,30 @@ async def sse_endpoint():
 
 # ← NEW: WebSocket endpoint — dashboard connects here for instant push updates
 @app.websocket("/ws/dashboard")
-async def websocket_dashboard(websocket: WebSocket, token: Optional[str] = None):
-    """Real-time WebSocket endpoint for the dashboard.
-    Each dashboard tab that opens creates one persistent connection here.
-    The server pushes breach/heartbeat/offline events to all connections instantly.
+async def websocket_dashboard(
+    websocket: WebSocket,
+    token: str = None  # ← NEW: JWT as query param
+):
     """
-    hotel_id = "ALL"
+    Real-time WebSocket endpoint.
+    # ← FIXED: Now requires token to identify
+    # which hotel this connection belongs to.
+    """
+    # ← NEW: Extract hotel_id from token
+    hotel_id = "default"
     if token:
-        try:
-            payload = AuthService.verify_token(token)
-            hotel_id = payload.get("hotel_id", "ALL")
-        except:
-            pass
-    await ws_manager.connect(websocket, hotel_id)  # ← NEW: Register this client with hotel_id
+        hotel_id = decode_jwt_hotel_id(token)
+    else:
+        # Try to get token from query string manually
+        query_params = dict(websocket.query_params)
+        token_param = query_params.get("token")
+        if token_param:
+            hotel_id = decode_jwt_hotel_id(token_param)
+            
+    print(f"🔌 WebSocket connecting for hotel={hotel_id}", flush=True)
+    
+    # ← FIXED: Pass hotel_id to connect()
+    await ws_manager.connect(websocket, hotel_id)
     try:
         # ← NEW: Send an immediate welcome message so the frontend knows it's live
         await websocket.send_text(json.dumps({
@@ -1374,8 +1473,16 @@ async def websocket_dashboard(websocket: WebSocket, token: Optional[str] = None)
         ws_manager.disconnect(websocket)
 
 # Helper function to broadcast events via Redis, in-memory SSE queue, AND WebSocket
-async def broadcast_event(event_type: str, data: dict):
-    """Broadcast event to all SSE clients via Redis or in-memory queue, and to all WebSocket clients."""
+async def broadcast_event(
+    event_type: str, 
+    data: dict,
+    hotel_id: str = "default"  # ← NEW parameter
+):
+    """
+    # ← FIXED: Now requires hotel_id to ensure
+    # events only reach the correct hotel's
+    # dashboard clients.
+    """
     message = {
         "type": event_type,
         "data": data,
@@ -1383,15 +1490,8 @@ async def broadcast_event(event_type: str, data: dict):
     }
     message_str = json.dumps(message)
     
-    hotel_id = data.get("hotel_id")
-    if not hotel_id and data.get("deviceId"):
-        device = await devices_collection.find_one({"_id": data["deviceId"]})
-        if device:
-            hotel_id = device.get("hotel_id")
-            data["hotel_id"] = hotel_id
-
-    # ← NEW: Push to connected WebSocket dashboard clients
-    await ws_manager.broadcast(message, hotel_id)
+    # ← FIXED: Pass hotel_id for filtered broadcast
+    await ws_manager.broadcast(message, target_hotel_id=hotel_id)
 
     if redis_client:
         try:

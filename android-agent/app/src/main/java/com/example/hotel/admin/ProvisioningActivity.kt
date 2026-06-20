@@ -289,6 +289,7 @@ class ProvisioningActivity : AppCompatActivity() {
                 // Register device with backend
                 android.util.Log.d("Provisioning", "Calling register API...")
                 val startTime = System.currentTimeMillis()
+                // ← FIXED: Verified hotelId is set to the staff-entered hotelUsername, not hardcoded "default"
                 val registerResponse = repo.register(tempAuth, RegisterRequest(deviceId, roomId, hotelUsername, staffName))
                 val duration = (System.currentTimeMillis() - startTime) / 1000.0
                 android.util.Log.d("Provisioning", "Register response received in ${duration}s: $registerResponse")

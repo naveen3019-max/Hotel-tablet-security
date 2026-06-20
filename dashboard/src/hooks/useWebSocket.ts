@@ -22,7 +22,8 @@ const getWsUrl = (httpUrl: string, token: string = ''): string => {
         ? wsUrl
         : `${wsUrl}/ws/dashboard`
     
-    const urlWithToken = token ? `${finalUrl}?token=${token}` : finalUrl;
+    // ← FIXED: Pass JWT token as query param so backend knows which hotel this connection belongs to
+    const urlWithToken = token ? `${finalUrl}?token=${encodeURIComponent(token)}` : finalUrl;
     console.log('[WS] Connecting to:', urlWithToken)
     return urlWithToken
 }
