@@ -389,6 +389,7 @@ class CreateHotelRequest(BaseModel):
     subscription_plan: str = "premium"
     max_devices: int = 100
     max_dashboard_logins: int = 2 # ← NEW: default 2
+    max_dashboard_logins: int = 2 # ← NEW: default 2
     contact_email: Optional[str] = None
 
 class AlertAcknowledge(BaseModel):
@@ -646,6 +647,7 @@ async def create_hotel(req: CreateHotelRequest, user=Depends(require_role("super
     hotel_data["subscription_active"] = True
     hotel_data["created_at"] = get_utc_naive()
     hotel_data["max_dashboard_logins"] = req.max_dashboard_logins # ← NEW
+    hotel_data["max_dashboard_logins"] = req.max_dashboard_logins # ← NEW
     
     try:
         await hotels_collection.insert_one(hotel_data)
@@ -669,6 +671,8 @@ async def list_hotels(user=Depends(require_role("super_admin"))):
             "subscription_active": h.get("subscription_active", True),
             "device_count": device_count,
             "active_breaches": active_breaches,
+            "max_dashboard_logins": h.get("max_dashboard_logins", 2),
+            "active_sessions": await sessions_collection.count_documents({"hotel_id": h["_id"], "expires_at": {"$gt": get_utc_naive()}}),
             "max_dashboard_logins": h.get("max_dashboard_logins", 2),
             "active_sessions": await sessions_collection.count_documents({"hotel_id": h["_id"], "expires_at": {"$gt": get_utc_naive()}})
         })

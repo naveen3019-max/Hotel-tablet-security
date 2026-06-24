@@ -41,8 +41,7 @@ export default function AdminPage() {
   const [hotelId, setHotelId] = useState("");
   const [hotelName, setHotelName] = useState("");
   const [username, setUsername] = useState("");
-  const [password,
-          max_dashboard_logins: maxLogins, setPassword] = useState("");
+  const [password, setPassword] = useState("");
   const [maxLogins, setMaxLogins] = useState(2); // ← NEW
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -248,11 +247,9 @@ export default function AdminPage() {
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Admin Password</label>
                   <input
-                    type="password,
-          max_dashboard_logins: maxLogins"
+                    type="password"
                     required
-                    value={password,
-          max_dashboard_logins: maxLogins}
+                    value={password}
                     onChange={e => setPassword(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-colors"
                     placeholder="••••••••"
