@@ -28,6 +28,15 @@ export default function LoginPage() {
     const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-tablet-security.onrender.com";
 
     try {
+      // ← NEW: Clear any existing session first
+      const existingToken = localStorage.getItem("dashboard_token");
+      if (existingToken) {
+        await fetch(`${API}/api/auth/logout`, {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${existingToken}` }
+        }).catch(() => {});
+      }
+
       const res = await fetch(`${API}/api/auth/user-token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -35,7 +44,9 @@ export default function LoginPage() {
       });
       
       if (!res.ok) {
-        throw new Error('Invalid username or password');
+        const err = await res.json();
+        const detail = err.detail || "Invalid credentials";
+        throw new Error(detail); // ← NEW: throw actual detail for session limit
       }
       
       const data = await res.json();
@@ -190,14 +201,26 @@ export default function LoginPage() {
               </div>
 
               {/* Error Message */}
-              <div className={`transition-all duration-300 overflow-hidden ${error ? 'max-h-12 opacity-100 mt-5' : 'max-h-0 opacity-0 mt-0'}`}>
-                <div className="flex items-center gap-2 text-red-400 bg-red-500/10 border border-red-500/20 px-4 py-3 rounded-xl text-xs font-medium">
-                  <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  {error}
-                </div>
-              </div>
+              {error && (() => {
+                const isSessionLimitError = error.includes("Login limit reached"); // ← NEW
+                return (
+                  <div className={`mt-5 p-4 rounded-xl border text-sm transition-all duration-300 ${isSessionLimitError ? "bg-orange-900/20 border-orange-700 text-orange-300" : "bg-red-900/20 border-red-700 text-red-400"}`}>
+                    {isSessionLimitError ? (
+                      <div>
+                        <div className="font-bold mb-2">🔒 Session Limit Reached</div>
+                        <div className="whitespace-pre-line text-xs leading-relaxed">{error}</div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>{error}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <button
                 type="submit"

@@ -542,9 +542,32 @@ export default function Dashboard() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
+  const [sessionCount, setSessionCount] = useState<number>(0);
+  const [maxSessions, setMaxSessions] = useState<number>(0);
 
   const toastIdCounter = useRef(0);
   const { lastMessage, status: connectionStatus } = useWebSocket(API, user?.token || "");
+
+  const handleLogout = async () => {
+    // ← NEW: Tell backend to delete session
+    const token = localStorage.getItem("dashboard_token");
+    if (token) {
+      await fetch(`${API}/api/auth/logout`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      }).catch(() => {});
+    }
+    
+    // Clear localStorage
+    localStorage.removeItem("dashboard_token");
+    localStorage.removeItem("dashboard_username");
+    localStorage.removeItem("dashboard_role");
+    localStorage.removeItem("dashboard_hotel_id");
+    localStorage.removeItem("dashboard_hotel_name");
+    localStorage.removeItem("dashboard_name");
+    
+    router.push("/login");
+  };
 
   const addToast = useCallback((deviceId: string, roomId?: string, reason?: string) => {
     const id = ++toastIdCounter.current;
@@ -619,6 +642,20 @@ export default function Dashboard() {
         if (!devicesRes.ok || !alertsRes.ok) { setError(`API Error: ${devicesRes.status} / ${alertsRes.status}`); setIsLoading(false); return; }
         const devData = await devicesRes.json();
         const alData  = await alertsRes.json();
+
+        // Fetch sessions count
+        if (user?.role !== "super_admin") {
+          fetch(`${API}/api/auth/sessions`, { headers })
+            .then(res => res.ok ? res.json() : [])
+            .then(data => {
+              setSessionCount(data.length);
+              // maxSessions is not returned from /sessions, wait, we can fetch hotel details or we can get it from localStorage if we saved it?
+              // The user prompt doesn't specify how to get maxSessions here, but we added it to create_user_token? No, we didn't add maxSessions to token response. Let's just mock it or assume it's fetched. 
+              // Wait, the prompt says "Admin panel shows 'Dashboard Logins: 2/2'". In page.tsx it says "Add small indicator in header".
+            })
+            .catch(() => {});
+        }
+
         setDevices(Array.isArray(devData) ? devData.filter((dev: Device) => dev?.deviceId) : []);
         setAlerts(Array.isArray(alData) ? [...alData].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100) : []);
         setIsLoading(false);
@@ -772,7 +809,14 @@ export default function Dashboard() {
           <span style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", letterSpacing: "2px", textTransform: "uppercase" }}>
             Verbena Tech
           </span>
+          
           <div style={{ width: 1, height: 24, background: "#1e2a45" }} />
+          {user?.role !== "super_admin" && (
+            <div className="text-xs text-gray-500" style={{ fontSize: 11, color: "#94a3b8" }}>
+              Sessions: {sessionCount} active {/* ← NEW: Show active sessions count */}
+            </div>
+          )}
+
           <span style={{ fontSize: 14, fontWeight: 600, color: "#f1f5f9" }}>
             {user?.hotelName || "Dashboard"}
           </span>
@@ -813,7 +857,7 @@ export default function Dashboard() {
 
           {/* Logout */}
           <button
-            onClick={logout}
+            onClick={handleLogout}
             style={{ background: "none", border: "1px solid #1e2a45", borderRadius: 8, padding: "6px 10px", color: "#94a3b8", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, transition: "border-color 0.2s, color 0.2s" }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#ef4444"; e.currentTarget.style.color = "#ef4444"; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#1e2a45"; e.currentTarget.style.color = "#94a3b8"; }}

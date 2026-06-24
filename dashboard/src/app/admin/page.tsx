@@ -5,6 +5,18 @@ import { useAuth } from "../../hooks/useAuth";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
 
+
+type Session = {
+  session_id: string;
+  hotel_id: string;
+  username: string;
+  device_info: string;
+  ip_address: string;
+  logged_in_at: string;
+  last_active: string;
+  expires_at: string;
+};
+
 type Hotel = {
   hotel_id: string;
   hotel_name: string;
@@ -12,6 +24,8 @@ type Hotel = {
   subscription_active: boolean;
   device_count: number;
   active_breaches: number;
+  max_dashboard_logins?: number;
+  active_sessions?: number;
 };
 
 export default function AdminPage() {
@@ -19,6 +33,7 @@ export default function AdminPage() {
   const router = useRouter();
 
   const [hotels, setHotels] = useState<Hotel[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]); // ← NEW
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,7 +41,9 @@ export default function AdminPage() {
   const [hotelId, setHotelId] = useState("");
   const [hotelName, setHotelName] = useState("");
   const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [password,
+          max_dashboard_logins: maxLogins, setPassword] = useState("");
+  const [maxLogins, setMaxLogins] = useState(2); // ← NEW
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createSuccess, setCreateSuccess] = useState(false);
@@ -43,9 +60,34 @@ export default function AdminPage() {
     }
     if (user?.role === "super_admin") {
       fetchHotels();
+      fetchSessions();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checking, isAuthenticated, router, user]);
+
+  
+  const fetchSessions = async () => {
+    try {
+      const res = await fetch(`${API}/api/admin/sessions`, {
+        headers: { "Authorization": `Bearer ${user?.token}` }
+      });
+      if (res.ok) {
+        setSessions(await res.json());
+      }
+    } catch (e) {}
+  };
+  
+  const handleForceLogout = async (sessionId: string) => {
+    try {
+      await fetch(`${API}/api/admin/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${user?.token}` }
+      });
+      fetchSessions();
+      fetchHotels();
+      fetchSessions();
+    } catch (e) {}
+  };
 
   const fetchHotels = async () => {
     try {
@@ -79,7 +121,8 @@ export default function AdminPage() {
           hotel_id: hotelId,
           hotel_name: hotelName,
           username,
-          password
+          password,
+          max_dashboard_logins: maxLogins
         })
       });
 
@@ -93,7 +136,8 @@ export default function AdminPage() {
       setHotelName("");
       setUsername("");
       setPassword("");
-      fetchHotels(); // Refresh list
+      fetchHotels();
+      fetchSessions(); // Refresh list
     } catch (err: unknown) {
       setCreateError((err as Error).message);
     } finally {
@@ -204,13 +248,33 @@ export default function AdminPage() {
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Admin Password</label>
                   <input
-                    type="password"
+                    type="password,
+          max_dashboard_logins: maxLogins"
                     required
-                    value={password}
+                    value={password,
+          max_dashboard_logins: maxLogins}
                     onChange={e => setPassword(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-colors"
                     placeholder="••••••••"
                   />
+                </div>
+
+                
+                {/* ← NEW */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Max Dashboard Logins *</label>
+                  <select
+                    value={maxLogins}
+                    onChange={e => setMaxLogins(parseInt(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-colors"
+                  >
+                    <option value={1}>1 login (Basic)</option>
+                    <option value={2}>2 logins (Standard)</option>
+                    <option value={5}>5 logins (Premium)</option>
+                    <option value={10}>10 logins (Enterprise)</option>
+                    <option value={25}>25 logins (Custom)</option>
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">How many devices can login to dashboard at the same time</p>
                 </div>
 
                 {createError && (
@@ -273,6 +337,12 @@ export default function AdminPage() {
                             <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-0.5">Breaches</div>
                             <div className={`font-bold ${h.active_breaches > 0 ? 'text-red-600' : 'text-slate-900'}`}>{h.active_breaches}</div>
                           </div>
+
+                          {/* ← NEW */}
+                          <div className="text-center border-l border-slate-200 pl-4 ml-2">
+                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-0.5">Logins</div>
+                            <div className="font-semibold text-slate-900">{h.active_sessions || 0}/{h.max_dashboard_logins || 2}</div>
+                          </div>
                         </div>
                         <button
                           onClick={() => handleToggleStatus(h.hotel_id)}
@@ -293,6 +363,53 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
+    </div>
+
+        {/* ← NEW: Active Sessions Table */}
+        <div className="mt-8 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+            <h2 className="text-lg font-bold text-slate-800">Active Dashboard Sessions</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm text-slate-600">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500 font-semibold">
+                <tr>
+                  <th className="px-6 py-3">Hotel ID</th>
+                  <th className="px-6 py-3">User</th>
+                  <th className="px-6 py-3">Device Info</th>
+                  <th className="px-6 py-3">IP Address</th>
+                  <th className="px-6 py-3">Logged In</th>
+                  <th className="px-6 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {sessions.map(s => (
+                  <tr key={s.session_id} className="hover:bg-slate-50/50">
+                    <td className="px-6 py-4 font-medium text-slate-900">{s.hotel_id}</td>
+                    <td className="px-6 py-4">{s.username}</td>
+                    <td className="px-6 py-4">{s.device_info}</td>
+                    <td className="px-6 py-4 font-mono text-xs">{s.ip_address}</td>
+                    <td className="px-6 py-4">{new Date(s.logged_in_at).toLocaleString()}</td>
+                    <td className="px-6 py-4 text-right">
+                      <button
+                        onClick={() => handleForceLogout(s.session_id)}
+                        className="text-xs bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 px-3 py-1.5 rounded-lg font-semibold transition-colors"
+                      >
+                        Force Logout
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {sessions.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-8 text-center text-slate-500">No active dashboard sessions.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
     </main>
   );
 }

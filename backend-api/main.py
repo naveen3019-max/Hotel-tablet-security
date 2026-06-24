@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Body, WebSocket, WebSocketDisconnect  # ← NEW: Added WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Depends, HTTPException, Body, WebSocket, WebSocketDisconnect, Header  # ← NEW: Added WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 import pytz  # type: ignore
 from db import (
+    db,
     db, devices_collection, alerts_collection, rooms_collection, hotels_collection,
     StatusEnum, init_db
 )
@@ -13,7 +14,7 @@ from config import settings
 from notifications import NotificationService
 from auth import AuthService, get_current_device, get_current_user, require_role
 
-from jose import jwt, JWTError
+from jose import jwt, JWTError  # type: ignore
 
 def decode_jwt_hotel_id(token: str) -> str:
     """
@@ -55,6 +56,21 @@ logger.setLevel(logging.INFO)
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(line_buffering=True)
 
+
+async def cleanup_expired_sessions():
+    # ← NEW: cleanup expired sessions
+    while True:
+        try:
+            await asyncio.sleep(300) # every 5 min
+            now = get_utc_naive()
+            result = await sessions_collection.delete_many({
+                "expires_at": {"$lt": now}
+            })
+            if result.deleted_count > 0:
+                print(f"🧹 Cleaned {result.deleted_count} expired sessions", flush=True)
+        except Exception as e:
+            logger.error(f"Session cleanup error: {e}")
+
 async def keepalive_ping():
     """Pings self every 8 minutes to prevent Render connection idle timeout."""
     await asyncio.sleep(30)  # wait for startup to complete
@@ -95,12 +111,15 @@ async def lifespan(app: FastAPI):
         print("✅ Redis connected for SSE", flush=True)
     except Exception as e:
         redis_client = None
+# ← NEW: Add sessions collection
+sessions_collection = db["dashboard_sessions"]
         logger.warning(f"Redis connection failed: {e}. SSE will work without Redis.")
         print(f"⚠️ Redis connection failed: {e}", flush=True)
     
     # Start background heartbeat monitoring
     monitoring_task = asyncio.create_task(monitor_device_heartbeats())
     keepalive_task = asyncio.create_task(keepalive_ping())
+    asyncio.create_task(cleanup_expired_sessions()) # ← NEW
     logger.info("🚀 Background heartbeat monitoring started")
     print("✅ Heartbeat monitoring task started", flush=True)
     print("="*60, flush=True)
@@ -193,6 +212,8 @@ def to_ist_isoformat(dt):
 
 # Redis connection for SSE
 redis_client = None
+# ← NEW: Add sessions collection
+sessions_collection = db["dashboard_sessions"]
 
 # Background monitoring task
 monitoring_task = None
@@ -367,6 +388,7 @@ class CreateHotelRequest(BaseModel):
     password: str
     subscription_plan: str = "premium"
     max_devices: int = 100
+    max_dashboard_logins: int = 2 # ← NEW: default 2
     contact_email: Optional[str] = None
 
 class AlertAcknowledge(BaseModel):
@@ -432,38 +454,189 @@ async def create_device_token(payload: DeviceRegister):
     return {"token": token, "type": "Bearer", "expires_in": settings.jwt_expiration_minutes * 60}
 
 @app.post("/api/auth/user-token")
-async def create_user_token(username: str = Body(...), password: str = Body(...)):
+async def create_user_token(
+    username: str = Body(...),
+    password: str = Body(...),
+    request: Request = None
+):
     """Issue JWT token for user (staff/admin)"""
-    if username == "admin" and password == "admin":
-        token = AuthService.create_user_token(user_id=username, role="super_admin", hotel_id="ALL", hotel_name="All Hotels")
-        return {
-            "token": token,
-            "username": "admin",
-            "role": "super_admin",
-            "hotel_id": "ALL",
-            "hotel_name": "All Hotels",
-            "name": "Super Admin"
-        }
+    user = await hotels_collection.find_one({"username": username})
     
-    # Check hotels collection
-    hotel = await hotels_collection.find_one({"username": username, "password": password})
-    if hotel:
-        token = AuthService.create_user_token(
-            user_id=username,
-            role=hotel.get("role", "hotel_admin"),
-            hotel_id=hotel.get("_id"),
-            hotel_name=hotel.get("hotel_name")
-        )
-        return {
-            "token": token,
-            "username": username,
-            "role": hotel.get("role", "hotel_admin"),
-            "hotel_id": hotel.get("_id"),
-            "hotel_name": hotel.get("hotel_name"),
-            "name": hotel.get("hotel_name")
-        }
+    is_super_admin = (username == "admin" and password == "admin")
+    
+    if not is_super_admin:
+        if not user:
+            raise HTTPException(401, "Invalid credentials")
+        if user.get("password") != password:
+            raise HTTPException(401, "Invalid credentials")
+        if not user.get("subscription_active", True):
+            raise HTTPException(403, "Your hotel subscription is suspended. Contact Hotel Security.")
+            
+    hotel_id = "ALL" if is_super_admin else user.get("_id", username)
+    role = "super_admin" if is_super_admin else user.get("role", "hotel_admin")
+    name = "Super Admin" if is_super_admin else user.get("hotel_name", username)
+    
+    # ← NEW: Check session limit
+    if not is_super_admin and user:
+        max_logins = user.get("max_dashboard_logins", 2)
         
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+        now_naive = get_utc_naive()
+        active_sessions = await sessions_collection.count_documents({
+            "hotel_id": hotel_id,
+            "expires_at": {"$gt": now_naive}
+        })
+        
+        if active_sessions >= max_logins:
+            sessions = await sessions_collection.find(
+                {
+                    "hotel_id": hotel_id,
+                    "expires_at": {"$gt": now_naive}
+                },
+                {"device_info": 1, "logged_in_at": 1, "ip_address": 1}
+            ).to_list(length=max_logins)
+            
+            session_info = []
+            for s in sessions:
+                session_info.append(
+                    f"• {s.get('device_info', 'Unknown device')} ({s.get('ip_address', '?')})"
+                )
+            
+            raise HTTPException(
+                403,
+                f"Login limit reached! Maximum {max_logins} dashboard sessions allowed for your plan. \n\nCurrently logged in:\n{chr(10).join(session_info)}\n\nPlease logout from another device first or contact Hotel Security to upgrade your plan."
+            )
+            
+    token = AuthService.create_user_token(
+        user_id=username,
+        role=role,
+        hotel_id=hotel_id,
+        hotel_name=name
+    )
+    
+    # ← NEW: Save session to MongoDB
+    if not is_super_admin:
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+        client_ip = "unknown"
+        if request:
+            forwarded = request.headers.get("X-Forwarded-For")
+            client_ip = forwarded.split(",")[0].strip() if forwarded else getattr(request.client, "host", "unknown")
+            
+        user_agent = ""
+        if request:
+            ua = request.headers.get("User-Agent", "")
+            if "Mobile" in ua or "Android" in ua: device_info = "Mobile Browser"
+            elif "iPad" in ua or "Tablet" in ua: device_info = "Tablet Browser"
+            elif "Chrome" in ua: device_info = "Chrome Browser"
+            elif "Firefox" in ua: device_info = "Firefox Browser"
+            elif "Safari" in ua: device_info = "Safari Browser"
+            else: device_info = "Web Browser"
+        else:
+            device_info = "Web Browser"
+            
+        from datetime import timedelta
+        now = get_utc_naive()
+        expires = now + timedelta(hours=24)
+        
+        await sessions_collection.insert_one({
+            "session_id": session_id,
+            "hotel_id": hotel_id,
+            "username": username,
+            "token": token,
+            "device_info": device_info,
+            "ip_address": client_ip,
+            "logged_in_at": now,
+            "last_active": now,
+            "expires_at": expires
+        })
+        
+        print(f"✅ Session created for {username} from {client_ip} ({device_info})", flush=True)
+
+    return {
+        "token": token,
+        "type": "Bearer",
+        "expires_in": settings.jwt_expiration_minutes * 60,
+        "username": username,
+        "role": role,
+        "hotel_id": hotel_id,
+        "hotel_name": name,
+        "name": name
+    }
+
+
+# ← NEW: Add logout endpoint
+@app.post("/api/auth/logout")
+async def logout(authorization: str = Header(None)):
+    """Delete session on logout"""
+    if not authorization:
+        return {"ok": True}
+    
+    token = authorization.replace("Bearer ", "")
+    result = await sessions_collection.delete_one({"token": token})
+    
+    if result.deleted_count > 0:
+        print("✅ Session deleted on logout", flush=True)
+    return {"ok": True}
+
+# ← NEW: Add get-sessions endpoint
+@app.get("/api/admin/sessions")
+async def get_all_sessions(user=Depends(require_role("super_admin"))):
+    """Super admin sees all active sessions"""
+    now = get_utc_naive()
+    sessions = await sessions_collection.find(
+        {"expires_at": {"$gt": now}}
+    ).to_list(length=1000)
+    
+    result = []
+    for s in sessions:
+        result.append({
+            "session_id": s.get("session_id"),
+            "hotel_id": s.get("hotel_id"),
+            "username": s.get("username"),
+            "device_info": s.get("device_info"),
+            "ip_address": s.get("ip_address"),
+            "logged_in_at": to_ist_isoformat(s.get("logged_in_at")),
+            "last_active": to_ist_isoformat(s.get("last_active")),
+            "expires_at": to_ist_isoformat(s.get("expires_at"))
+        })
+    return result
+
+# ← NEW: Add force-logout endpoint
+@app.delete("/api/admin/sessions/{session_id}")
+async def force_logout_session(session_id: str, user=Depends(require_role("super_admin"))):
+    """Super admin force-logouts a session"""
+    result = await sessions_collection.delete_one({"session_id": session_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Session not found")
+    return {"ok": True, "message": "Session terminated"}
+
+# ← NEW: Add hotel sessions endpoint
+@app.get("/api/auth/sessions")
+async def get_my_sessions(authorization: str = Header(None)):
+    """Hotel sees their own active sessions"""
+    if not authorization:
+        raise HTTPException(401, "Unauthorized")
+    
+    token = authorization.replace("Bearer ", "")
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
+        hotel_id = payload.get("hotel_id")
+    except Exception:
+        raise HTTPException(401, "Invalid token")
+    
+    now = get_utc_naive()
+    sessions = await sessions_collection.find(
+        {"hotel_id": hotel_id, "expires_at": {"$gt": now}}
+    ).to_list(length=100)
+    
+    return [{
+        "session_id": s.get("session_id"),
+        "device_info": s.get("device_info"),
+        "ip_address": s.get("ip_address"),
+        "logged_in_at": to_ist_isoformat(s.get("logged_in_at")),
+        "last_active": to_ist_isoformat(s.get("last_active"))
+    } for s in sessions]
 
 @app.post("/api/admin/create-hotel")
 async def create_hotel(req: CreateHotelRequest, user=Depends(require_role("super_admin"))):
@@ -472,6 +645,7 @@ async def create_hotel(req: CreateHotelRequest, user=Depends(require_role("super
     hotel_data["role"] = "hotel_admin"
     hotel_data["subscription_active"] = True
     hotel_data["created_at"] = get_utc_naive()
+    hotel_data["max_dashboard_logins"] = req.max_dashboard_logins # ← NEW
     
     try:
         await hotels_collection.insert_one(hotel_data)
@@ -494,7 +668,9 @@ async def list_hotels(user=Depends(require_role("super_admin"))):
             "username": h.get("username"),
             "subscription_active": h.get("subscription_active", True),
             "device_count": device_count,
-            "active_breaches": active_breaches
+            "active_breaches": active_breaches,
+            "max_dashboard_logins": h.get("max_dashboard_logins", 2),
+            "active_sessions": await sessions_collection.count_documents({"hotel_id": h["_id"], "expires_at": {"$gt": get_utc_naive()}})
         })
     return result
 
@@ -1428,7 +1604,7 @@ async def sse_endpoint():
 @app.websocket("/ws/dashboard")
 async def websocket_dashboard(
     websocket: WebSocket,
-    token: str = None  # ← NEW: JWT as query param
+    token: Optional[str] = None  # ← NEW: JWT as query param
 ):
     """
     Real-time WebSocket endpoint.
