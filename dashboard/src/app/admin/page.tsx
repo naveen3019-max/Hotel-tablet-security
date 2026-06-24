@@ -360,8 +360,7 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
-    </div>
-
+    
         {/* ← NEW: Active Sessions Table */}
         <div className="mt-8 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
