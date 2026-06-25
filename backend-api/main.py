@@ -753,8 +753,7 @@ async def delete_hotel(hotel_id: str):
     
     # 6. Broadcast to notify any connected
     # dashboard clients of this hotel
-    from websocket_manager import manager as ws_manager
-    await ws_manager.broadcast_event(
+    await broadcast_event(
         "hotel_deleted",
         {
             "hotel_id": hotel_id,
