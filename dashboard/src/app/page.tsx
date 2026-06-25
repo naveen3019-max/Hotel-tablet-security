@@ -574,6 +574,15 @@ export default function Dashboard() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 8000);
   }, []);
 
+  // ── Request Browser Notification Permission ──
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission !== "granted" && Notification.permission !== "denied") {
+        Notification.requestPermission();
+      }
+    }
+  }, []);
+
   // ── WebSocket handler ──
   useEffect(() => {
     if (!lastMessage) return;
@@ -599,7 +608,16 @@ export default function Dashboard() {
           message: d?.message as string | undefined,
         };
         setAlerts((prev) => [newAlert, ...prev].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100));
-        if (breachDeviceId) addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
+        if (breachDeviceId) {
+          addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
+          
+          if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+            const notif = new Notification("🚨 SECURITY BREACH DETECTED", {
+              body: `Device ${breachDeviceId} ${d?.roomId ? `(Room ${d.roomId})` : ""} - ${d?.message || "Immediate attention required"}`,
+            });
+            notif.onclick = () => { window.focus(); notif.close(); };
+          }
+        }
       }
 
       if (lastMessage?.type === "device_update" && d?.deviceId) {
