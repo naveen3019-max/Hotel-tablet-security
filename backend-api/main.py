@@ -111,8 +111,6 @@ async def lifespan(app: FastAPI):
         print("✅ Redis connected for SSE", flush=True)
     except Exception as e:
         redis_client = None
-# ← NEW: Add sessions collection
-sessions_collection = db["dashboard_sessions"]
         logger.warning(f"Redis connection failed: {e}. SSE will work without Redis.")
         print(f"⚠️ Redis connection failed: {e}", flush=True)
     
