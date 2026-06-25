@@ -444,9 +444,12 @@ export default function AdminPage() {
                         </button>
                         <button
                             onClick={() => handleDeleteClick(h)}
-                            className="px-3 py-1 bg-red-900/30 hover:bg-red-900/60 text-red-400 hover:text-red-300 border border-red-800/50 rounded-lg text-xs transition font-semibold"
+                            className="text-xs px-4 py-2 rounded-lg font-bold transition-all whitespace-nowrap bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border border-red-200 flex items-center justify-center gap-1.5"
                         >
-                            🗑️ Delete
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                            </svg>
+                            Delete Tenant
                         </button>
                       </div>
                     </div>
@@ -662,7 +665,12 @@ function DeleteHotelModal({
                                 Deleting...
                             </span>
                         ) : (
-                            "🗑️ Delete Hotel"
+                            <span className="flex items-center justify-center gap-2">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                                </svg>
+                                Delete Hotel
+                            </span>
                         )}
                     </button>
                 </div>
