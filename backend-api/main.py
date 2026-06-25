@@ -691,6 +691,142 @@ async def toggle_hotel_status(hotel_id: str, user=Depends(require_role("super_ad
     )
     return {"ok": True, "subscription_active": new_status}
 
+@app.delete("/api/admin/hotels/{hotel_id}")
+async def delete_hotel(hotel_id: str):
+    """
+    Super admin permanently deletes a hotel
+    and ALL associated data.
+    """
+    # Check hotel exists
+    hotel = await hotels_collection.find_one(
+        {"_id": hotel_id})
+    if not hotel:
+        raise HTTPException(
+            404, "Hotel not found")
+    
+    hotel_name = hotel.get(
+        "hotel_name", hotel_id)
+    
+    # Count what will be deleted
+    device_ids = [
+        d["_id"] async for d in 
+        devices_collection.find(
+            {"hotel_id": hotel_id}, 
+            {"_id": 1}
+        )
+    ]
+    
+    device_count = len(device_ids)
+    
+    alert_count = await alerts_collection\
+        .count_documents(
+        {"deviceId": {"$in": device_ids}}
+    ) if device_ids else 0
+    
+    session_count = await sessions_collection\
+        .count_documents(
+        {"hotel_id": hotel_id})
+    
+    # DELETE EVERYTHING
+    
+    # 1. Delete all alerts for hotel devices
+    if device_ids:
+        await alerts_collection.delete_many(
+            {"deviceId": {"$in": device_ids}})
+    
+    # 2. Delete all devices
+    await devices_collection.delete_many(
+        {"hotel_id": hotel_id})
+    
+    # 3. Delete all sessions
+    await sessions_collection.delete_many(
+        {"hotel_id": hotel_id})
+    
+    # 4. Delete FCM tokens
+    try:
+        await fcm_tokens_collection.delete_many(
+            {"hotel_id": hotel_id})
+    except Exception:
+        pass
+    
+    # 5. Delete hotel
+    await hotels_collection.delete_one(
+        {"_id": hotel_id})
+    
+    # 6. Broadcast to notify any connected
+    # dashboard clients of this hotel
+    from websocket_manager import manager as ws_manager
+    await ws_manager.broadcast_event(
+        "hotel_deleted",
+        {
+            "hotel_id": hotel_id,
+            "message": "Hotel account deleted"
+        },
+        hotel_id=hotel_id
+    )
+    
+    print(
+        f"🗑️ Hotel DELETED: {hotel_name} | "
+        f"Devices: {device_count} | "
+        f"Alerts: {alert_count} | "
+        f"Sessions: {session_count}",
+        flush=True
+    )
+    
+    logger.warning(
+        f"Hotel deleted: {hotel_id} "
+        f"({hotel_name})"
+    )
+    
+    return {
+        "ok": True,
+        "message": 
+            f"Hotel '{hotel_name}' deleted",
+        "deleted": {
+            "hotel": hotel_name,
+            "devices": device_count,
+            "alerts": alert_count,
+            "sessions": session_count
+        }
+    }
+
+@app.get("/api/admin/hotels/{hotel_id}/stats")
+async def get_hotel_stats(hotel_id: str):
+    """Get hotel stats before deletion"""
+    hotel = await hotels_collection.find_one(
+        {"_id": hotel_id})
+    if not hotel:
+        raise HTTPException(
+            404, "Hotel not found")
+    
+    device_ids = [
+        d["_id"] async for d in 
+        devices_collection.find(
+            {"hotel_id": hotel_id},
+            {"_id": 1}
+        )
+    ]
+    
+    device_count = len(device_ids)
+    
+    alert_count = await alerts_collection\
+        .count_documents(
+        {"deviceId": {"$in": device_ids}}
+    ) if device_ids else 0
+    
+    session_count = await sessions_collection\
+        .count_documents(
+        {"hotel_id": hotel_id})
+    
+    return {
+        "hotel_id": hotel_id,
+        "hotel_name": hotel.get("hotel_name"),
+        "username": hotel.get("username"),
+        "device_count": device_count,
+        "alert_count": alert_count,
+        "session_count": session_count
+    }
+
 # Device registration with JWT
 @app.post("/api/devices/register")
 async def register_device(payload: DeviceRegister):

@@ -46,6 +46,17 @@ export default function AdminPage() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createSuccess, setCreateSuccess] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [hotelToDelete, setHotelToDelete] = useState<Hotel | null>(null)
+  const [deleteStats, setDeleteStats] = useState<{
+      device_count: number
+      alert_count: number
+      session_count: number
+  } | null>(null)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [deleteLoading, setDeleteLoading] = useState(false)
 
   useEffect(() => {
     if (checking) return;
@@ -73,7 +84,9 @@ export default function AdminPage() {
       if (res.ok) {
         setSessions(await res.json());
       }
-    } catch (e) {}
+    } catch {
+      // ignore error
+    }
   };
   
   const handleForceLogout = async (sessionId: string) => {
@@ -85,7 +98,9 @@ export default function AdminPage() {
       fetchSessions();
       fetchHotels();
       fetchSessions();
-    } catch (e) {}
+    } catch {
+      // ignore error
+    }
   };
 
   const fetchHotels = async () => {
@@ -163,6 +178,77 @@ export default function AdminPage() {
     }
   };
 
+  const handleDeleteClick = async (hotel: Hotel) => {
+      setHotelToDelete(hotel)
+      setDeleteConfirmText("")
+      setError("")
+      
+      // Fetch stats for confirmation dialog
+      try {
+          const res = await fetch(
+              `${API}/api/admin/hotels/${hotel.hotel_id}/stats`,
+              { headers: { "Authorization": `Bearer ${user?.token}` } }
+          )
+          const stats = await res.json()
+          setDeleteStats(stats)
+      } catch {
+          setDeleteStats(null)
+      }
+      
+      setShowDeleteModal(true)
+  }
+
+  const handleDeleteConfirm = async () => {
+      if (!hotelToDelete) return
+      
+      // Verify typed hotel name matches
+      if (deleteConfirmText !== hotelToDelete.hotel_name) {
+          setError(
+              "Hotel name does not match. " +
+              "Please type the exact hotel name.")
+          return
+      }
+      
+      setDeleteLoading(true)
+      setError("")
+      
+      try {
+          const res = await fetch(
+              `${API}/api/admin/hotels/${hotelToDelete.hotel_id}`,
+              {
+                  method: "DELETE",
+                  headers: { "Authorization": `Bearer ${user?.token}` }
+              }
+          )
+          
+          if (!res.ok) {
+              const err = await res.json()
+              throw new Error(err.detail || "Delete failed")
+          }
+          
+          const result = await res.json()
+          
+          setSuccess(
+              `✅ Hotel "${hotelToDelete.hotel_name}" `+
+              `deleted successfully! `+
+              `Removed ${result.deleted.devices} `+
+              `devices and ${result.deleted.alerts} `+
+              `alerts.`
+          )
+          setShowDeleteModal(false)
+          setHotelToDelete(null)
+          setDeleteStats(null)
+          
+          // Refresh hotels list
+          fetchHotels()
+          
+      } catch (e: unknown) {
+          setError(e instanceof Error ? e.message : "Failed to delete hotel")
+      } finally {
+          setDeleteLoading(false)
+      }
+  }
+
   if (checking || loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -200,6 +286,11 @@ export default function AdminPage() {
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">
             Error: {error}
+          </div>
+        )}
+        {success && (
+          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm font-medium">
+            {success}
           </div>
         )}
 
@@ -351,6 +442,12 @@ export default function AdminPage() {
                         >
                           {h.subscription_active ? 'Block User' : 'Unblock User'}
                         </button>
+                        <button
+                            onClick={() => handleDeleteClick(h)}
+                            className="px-3 py-1 bg-red-900/30 hover:bg-red-900/60 text-red-400 hover:text-red-300 border border-red-800/50 rounded-lg text-xs transition font-semibold"
+                        >
+                            🗑️ Delete
+                        </button>
                       </div>
                     </div>
                   ))
@@ -406,6 +503,170 @@ export default function AdminPage() {
           </div>
         </div>
 
+      {showDeleteModal && hotelToDelete && (
+        <DeleteHotelModal
+            hotel={hotelToDelete}
+            stats={deleteStats}
+            confirmText={deleteConfirmText}
+            onConfirmTextChange={setDeleteConfirmText}
+            onConfirm={handleDeleteConfirm}
+            onClose={() => {
+                setShowDeleteModal(false)
+                setHotelToDelete(null)
+                setDeleteStats(null)
+                setDeleteConfirmText("")
+                setError("")
+            }}
+            loading={deleteLoading}
+            error={error || ""}
+        />
+      )}
     </main>
   );
+}
+
+function DeleteHotelModal({
+    hotel,
+    stats,
+    confirmText,
+    onConfirmTextChange,
+    onConfirm,
+    onClose,
+    loading,
+    error
+}: {
+    hotel: Hotel
+    stats: {
+        device_count: number
+        alert_count: number
+        session_count: number
+    } | null
+    confirmText: string
+    onConfirmTextChange: (v: string) => void
+    onConfirm: () => void
+    onClose: () => void
+    loading: boolean
+    error: string
+}) {
+    const isConfirmed = confirmText === hotel.hotel_name
+    
+    return (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-gray-900 border border-red-800/50 rounded-2xl p-6 w-full max-w-md shadow-2xl shadow-red-900/20">
+                
+                {/* Warning Header */}
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-12 h-12 bg-red-900/30 rounded-full flex items-center justify-center text-2xl flex-shrink-0">
+                        ⚠️
+                    </div>
+                    <div>
+                        <h2 className="text-xl font-bold text-red-400">
+                            Delete Hotel
+                        </h2>
+                        <p className="text-gray-400 text-sm">
+                            This action cannot be undone
+                        </p>
+                    </div>
+                </div>
+                
+                {/* Hotel Info */}
+                <div className="bg-gray-800 rounded-xl p-4 mb-4">
+                    <div className="font-semibold text-white mb-1">
+                        {hotel.hotel_name}
+                    </div>
+                    <div className="text-gray-400 text-sm">
+                        @{hotel.username}
+                    </div>
+                </div>
+                
+                {/* What will be deleted */}
+                <div className="bg-red-900/10 border border-red-800/30 rounded-xl p-4 mb-5">
+                    <div className="text-red-400 text-xs font-semibold uppercase tracking-wider mb-3">
+                        This will permanently delete:
+                    </div>
+                    <div className="space-y-2">
+                        <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <span className="text-red-400">•</span>
+                            Hotel account and login credentials
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <span className="text-red-400">•</span>
+                            <span className="font-semibold text-white">
+                                {stats?.device_count ?? "?"}
+                            </span>
+                            &nbsp;registered tablet devices
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <span className="text-red-400">•</span>
+                            <span className="font-semibold text-white">
+                                {stats?.alert_count ?? "?"}
+                            </span>
+                            &nbsp;security alert records
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <span className="text-red-400">•</span>
+                            <span className="font-semibold text-white">
+                                {stats?.session_count ?? "?"}
+                            </span>
+                            &nbsp;active login sessions
+                        </div>
+                    </div>
+                </div>
+                
+                {/* Error message */}
+                {error && (
+                    <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-400 text-sm">
+                        {error}
+                    </div>
+                )}
+                
+                {/* Type to confirm */}
+                <div className="mb-5">
+                    <label className="text-xs text-gray-400 mb-2 block">
+                        Type{" "}
+                        <span className="text-white font-semibold font-mono bg-gray-800 px-1.5 py-0.5 rounded">
+                            {hotel.hotel_name}
+                        </span>
+                        {" "}to confirm deletion:
+                    </label>
+                    <input
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:border-red-500 outline-none placeholder-gray-600"
+                        placeholder={hotel.hotel_name}
+                        value={confirmText}
+                        onChange={e => onConfirmTextChange(e.target.value)}
+                        disabled={loading}
+                    />
+                </div>
+                
+                {/* Action Buttons */}
+                <div className="flex gap-3">
+                    <button
+                        onClick={onClose}
+                        disabled={loading}
+                        className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-sm transition"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        onClick={onConfirm}
+                        disabled={!isConfirmed || loading}
+                        className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition
+                            ${isConfirmed && !loading
+                                ? "bg-red-600 hover:bg-red-700 text-white"
+                                : "bg-gray-700 text-gray-500 cursor-not-allowed"
+                            }`}
+                    >
+                        {loading ? (
+                            <span className="flex items-center justify-center gap-2">
+                                <span className="animate-spin">⟳</span>
+                                Deleting...
+                            </span>
+                        ) : (
+                            "🗑️ Delete Hotel"
+                        )}
+                    </button>
+                </div>
+            </div>
+        </div>
+    )
 }

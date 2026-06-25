@@ -528,7 +528,7 @@ function AlertItem({
 
 // ─── MAIN DASHBOARD ───────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { isAuthenticated, checking, logout, user } = useAuth();
+  const { isAuthenticated, checking, user } = useAuth();
   const router = useRouter();
 
   const [devices, setDevices]         = useState<Device[]>([]);
@@ -543,7 +543,6 @@ export default function Dashboard() {
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
   const [sessionCount, setSessionCount] = useState<number>(0);
-  const [maxSessions, setMaxSessions] = useState<number>(0);
 
   const toastIdCounter = useRef(0);
   const { lastMessage, status: connectionStatus } = useWebSocket(API, user?.token || "");
@@ -623,8 +622,26 @@ export default function Dashboard() {
       }
 
       if (type === "database_cleared") { setDevices([]); setAlerts([]); }
+
+      if (lastMessage?.type === "hotel_deleted") {
+          // This hotel's account was deleted
+          // by super admin — force logout
+          const deletedHotelId = d?.hotel_id;
+          const myHotelId = localStorage.getItem("dashboard_hotel_id");
+          
+          if (deletedHotelId === myHotelId) {
+              alert(
+                  "Your hotel account has been " +
+                  "deleted by the administrator. " +
+                  "You will be logged out."
+              )
+              // Clear everything and redirect
+              localStorage.clear()
+              router.push("/login")
+          }
+      }
     }, 0);
-  }, [lastMessage, addToast]);
+  }, [lastMessage, addToast, router]);
 
   // ── Initial fetch + polling ──
   useEffect(() => {
@@ -665,7 +682,7 @@ export default function Dashboard() {
     fetchAll();
     const pollId = setInterval(fetchAll, 10000);
     return () => clearInterval(pollId);
-  }, [isAuthenticated, user?.token]);
+  }, [isAuthenticated, user?.token, user?.role]);
 
   const handleDeleteDevice = async (deviceId: string) => {
     try {
