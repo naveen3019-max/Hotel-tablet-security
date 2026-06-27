@@ -456,7 +456,7 @@ async def create_device_token(payload: DeviceRegister):
 async def create_user_token(
     username: str = Body(...),
     password: str = Body(...),
-    request: Request = None
+    request: Optional[Request] = None
 ):
     """Issue JWT token for user (staff/admin)"""
     user = await hotels_collection.find_one({"username": username})
@@ -471,9 +471,9 @@ async def create_user_token(
         if not user.get("subscription_active", True):
             raise HTTPException(403, "Your hotel subscription is suspended. Contact Hotel Security.")
             
-    hotel_id = "ALL" if is_super_admin else user.get("_id", username)
-    role = "super_admin" if is_super_admin else user.get("role", "hotel_admin")
-    name = "Super Admin" if is_super_admin else user.get("hotel_name", username)
+    hotel_id = "ALL" if is_super_admin else (user or {}).get("_id", username)
+    role = "super_admin" if is_super_admin else (user or {}).get("role", "hotel_admin")
+    name = "Super Admin" if is_super_admin else (user or {}).get("hotel_name", username)
     
     # ← NEW: Check session limit
     if not is_super_admin and user:
@@ -742,7 +742,7 @@ async def delete_hotel(hotel_id: str):
     
     # 4. Delete FCM tokens
     try:
-        await fcm_tokens_collection.delete_many(
+        await db["fcm_tokens"].delete_many(
             {"hotel_id": hotel_id})
     except Exception:
         pass

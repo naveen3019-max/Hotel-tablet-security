@@ -5,15 +5,15 @@ plugins {
 }
 
 android {
-    namespace = "com.example.hotel"
+    namespace = "com.hotel.security.dashboard"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.hotel"
-        minSdk = 23
+        applicationId = "com.hotel.security.dashboard"
+        minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "2.6.0"
+        versionCode = 5
+        versionName = "2.5.0"
     }
 
     buildTypes {

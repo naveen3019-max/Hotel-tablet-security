@@ -41,7 +41,10 @@ class BootReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "BootReceiver"
-        private const val PREFS_NAME = "hotel_prefs"
+        // ← FIXED: was "hotel_prefs" which never matched ProvisioningActivity's
+        //   "agent" prefs — so isProvisioned was always false and services
+        //   never started after reboot. Now correctly reads from "agent".
+        private const val PREFS_NAME = "agent"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -67,18 +70,26 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        Log.i(TAG, "Device is provisioned — starting WiFiMonitoringService")
+        Log.i(TAG, "Device is provisioned — starting monitoring services after boot")
 
-        val serviceIntent = Intent(context, com.example.hotel.service.KioskService::class.java)
-
-        // startForegroundService() is required on API 26+ (minSdk 29).
-        // WiFiMonitoringService.onCreate() calls startForeground() within 5 s.
+        // ← NEW: Also start WiFiMonitoringService (heartbeats + breach detection).
+        //   ProvisioningActivity starts both services at registration time; we
+        //   must mirror that here so both are alive after every reboot.
+        val wifiIntent = Intent(context, WiFiMonitoringService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
+            context.startForegroundService(wifiIntent)
         } else {
-            context.startService(serviceIntent)
+            context.startService(wifiIntent)
         }
+        Log.i(TAG, "✅ WiFiMonitoringService started after boot")
 
+        // KioskService: screen lock, battery monitoring, admin menu bridge
+        val kioskIntent = Intent(context, com.example.hotel.service.KioskService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(kioskIntent)
+        } else {
+            context.startService(kioskIntent)
+        }
         Log.i(TAG, "✅ KioskService started after boot")
     }
 }

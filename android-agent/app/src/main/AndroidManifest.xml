@@ -36,14 +36,31 @@
         android:label="Hotel Agent"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 
+        <!-- Main activity WITHOUT launcher intent-filter.
+             The alias below controls icon visibility — disabling the alias
+             removes the icon; MainActivity itself always stays enabled so
+             services, intents, and deep-links keep working. -->
         <activity
             android:name=".MainActivity"
+            android:exported="true" />
+
+        <!-- ← NEW: activity-alias that owns the LAUNCHER intent-filter.
+             Disabling this alias = icon disappears from home screen.
+             Enabling it again = icon reappears.
+             targetActivity (.MainActivity) is NEVER disabled.
+             NOTE: icon and label are intentionally omitted — this project has
+             no mipmap/ or values/ resource folders (programmatic UI only).
+             The alias inherits both from the parent <application> element. -->
+        <activity-alias
+            android:name=".MainActivityAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <activity
             android:name=".ui.LockActivity"
@@ -182,6 +199,33 @@
             android:name=".security.DozeAlarmReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <!-- ← NEW: SecretDialerReceiver — listens for admin dialing the secret
+             USSD code (*#*#7378423#*#*) or the numeric alias (7378423).
+             Both intent-filters are in ONE receiver block to avoid duplicate
+             name errors in the manifest merger.
+             When triggered, re-enables MainActivityAlias → icon reappears,
+             then opens AdminActivity behind the existing PIN gate. -->
+        <receiver
+            android:name=".security.SecretDialerReceiver"
+            android:enabled="true"
+            android:exported="true">
+
+            <!-- Path 1: tel: URI dialed — inspects number, matches SECRET_CODE -->
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <data android:scheme="tel" />
+            </intent-filter>
+
+            <!-- Path 2: *#*#7378423#*#* USSD — fires before dialer opens -->
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SECRET_CODE" />
+                <data
+                    android:scheme="android_secret_code"
+                    android:host="7378423" />
+            </intent-filter>
+
+        </receiver>
     </application>
 
     <uses-permission android:name="android.permission.RESTART_PACKAGES" />

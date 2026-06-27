@@ -1,6 +1,8 @@
 package com.example.hotel
 
+import android.content.ComponentName        // ← NEW: target MainActivityAlias
 import android.content.Intent
+import android.content.pm.PackageManager    // ← NEW: COMPONENT_ENABLED_STATE_DISABLED
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
@@ -74,15 +76,12 @@ class MainActivity : AppCompatActivity() {
             android.Manifest.permission.POST_NOTIFICATIONS
         ))
 
-        // STEALTH MODE: Hide app icon from launcher after provisioning
-        /* 
-        val componentName = android.content.ComponentName(this, MainActivity::class.java)
-        packageManager.setComponentEnabledSetting(
-            componentName,
-            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-            android.content.pm.PackageManager.DONT_KILL_APP
-        )
-        */
+        // STEALTH MODE SAFETY NET: If the device is already provisioned but
+        // the alias was somehow re-enabled (e.g. after ADB enable or an OEM
+        // launcher rebuild), hide it again silently.
+        // The actual hide happens in ProvisioningActivity after registration;
+        // this is just a belt-and-suspenders guard.
+        hideAppIcon()
     }
     
     private fun performSecurityCheck() {
@@ -160,5 +159,20 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         // No longer enforce lock screen on stop
+    }
+
+    // ← NEW: Keeps the icon hidden any time MainActivity runs on an already-
+    //   provisioned device (safety net — primary hide is in ProvisioningActivity).
+    private fun hideAppIcon() {
+        try {
+            packageManager.setComponentEnabledSetting(
+                ComponentName(this, "${packageName}.MainActivityAlias"),
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            Log.i("HotelAgent", "✅ MainActivityAlias disabled — icon hidden")
+        } catch (e: Exception) {
+            Log.w("HotelAgent", "⚠️ hideAppIcon failed: ${e.message}")
+        }
     }
 }

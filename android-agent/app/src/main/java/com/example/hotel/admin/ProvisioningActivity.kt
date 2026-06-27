@@ -1,10 +1,14 @@
 package com.example.hotel.admin
 
+import android.content.ComponentName       // ← NEW: used to target MainActivityAlias
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager   // ← NEW: COMPONENT_ENABLED_STATE_DISABLED
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler                  // ← NEW: 3-second delay before icon hide
+import android.os.Looper                   // ← NEW: main-thread looper for Handler
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -12,6 +16,7 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.example.hotel.data.AgentRepository
 import com.example.hotel.data.RegisterRequest
+import com.example.hotel.security.WiFiMonitoringService  // ← NEW: start WiFi monitoring
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -326,17 +331,25 @@ class ProvisioningActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
                         this@ProvisioningActivity,
-                        "✓ Device registered!\nBackend: $backendUrl\nWorks with ANY WiFi network\nThreshold: $minRssi dBm",
+                        "✅ Device registered!\n" +
+                        "Device: $deviceId\nRoom: $roomId\n\n" +
+                        "Security monitoring starting...",
                         Toast.LENGTH_LONG
                     ).show()
-                    
-                    statusText.text = "Registration complete!"
-                    
-                    // Restart to apply stealth mode
-                    val intent = android.content.Intent(this@ProvisioningActivity, com.example.hotel.MainActivity::class.java)
-                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                    startActivity(intent)
-                    finish()
+
+                    statusText.text = "✅ Registration complete! Starting security monitoring..."
+
+                    // ← NEW: Start services immediately so monitoring is live.
+                    startMonitoringServices()
+
+                    // ← NEW: Wait 3 seconds so the success toast is readable,
+                    //   then hide the launcher icon and close this activity.
+                    //   We use Handler(mainLooper) instead of postDelayed on a
+                    //   coroutine so it always runs on the UI thread safely.
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        hideAppIcon()    // ← NEW: icon disappears from launcher
+                        finishAffinity() // ← NEW: close all activities in this task
+                    }, 3_000L)
                 }
                 
             } catch (e: Exception) {
@@ -393,5 +406,65 @@ class ProvisioningActivity : AppCompatActivity() {
     override fun onBackPressed() {
         // Prevent exiting provisioning without completing
         Toast.makeText(this, "Please complete device registration", Toast.LENGTH_SHORT).show()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ← NEW: Stealth / icon-hiding helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Hides the app icon from the home screen launcher by DISABLING the
+     * activity-alias (.MainActivityAlias).  The alias is the only component
+     * that carries the LAUNCHER intent-filter; disabling it makes every
+     * launcher drop the shortcut within ~5 seconds without any UI prompt.
+     *
+     * WHY alias and not MainActivity directly?
+     *   If we disabled MainActivity the system would kill the whole task and
+     *   all bound services.  The alias is just a pointer — disabling it only
+     *   affects launcher discovery; services keep running unaffected.
+     *
+     * DONT_KILL_APP flag ensures no process restart happens.
+     */
+    private fun hideAppIcon() {
+        try {
+            packageManager.setComponentEnabledSetting(
+                ComponentName(this, "${packageName}.MainActivityAlias"), // ← alias name
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP   // ← services keep running
+            )
+            Log.i(TAG, "✅ App icon hidden from launcher — running silently in background")
+        } catch (e: Exception) {
+            // Never crash registration just because icon-hide failed
+            Log.e(TAG, "⚠️ Failed to hide app icon: ${e.message}")
+        }
+    }
+
+    /**
+     * Starts both background services that must run forever after registration.
+     *
+     * • WiFiMonitoringService — sends heartbeats every 10 s, detects breach
+     * • KioskService          — enforces kiosk lock, monitors battery/screen
+     *
+     * startForegroundService() is mandatory on API 26+ (our minSdk is 26).
+     * Each service calls startForeground() in its own onCreate() within 5 s.
+     */
+    private fun startMonitoringServices() {
+        // ← NEW: Start WiFi heartbeat + breach detection service
+        val wifiIntent = Intent(this, WiFiMonitoringService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(wifiIntent)
+        } else {
+            startService(wifiIntent)
+        }
+        Log.i(TAG, "✅ WiFiMonitoringService started")
+
+        // ← NEW: Start kiosk lock + screen management service
+        val kioskIntent = Intent(this, com.example.hotel.service.KioskService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(kioskIntent)
+        } else {
+            startService(kioskIntent)
+        }
+        Log.i(TAG, "✅ KioskService started")
     }
 }
