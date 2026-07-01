@@ -67,7 +67,7 @@ const isDeviceOffline = (d: Device): boolean => {
   if (d.status === "offline" || d.rssi === -127) return true;
   if (d.lastSeen) {
     const diff = (Date.now() - new Date(d.lastSeen).getTime()) / 1000;
-    if (diff > 7200) return true; // 2 hours
+    if (diff > 600) return true; // 10 minutes
   }
   return false;
 };
@@ -294,9 +294,10 @@ function DeviceCard({
   const statusLabel  = isBreach ? "BREACH" : isOffline ? "OFFLINE" : "SECURE";
   const statusColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
 
+  const displayRssi = isOffline ? undefined : d.rssi;
   const battColor = getBatteryColor(d.battery);
-  const rssiColor = getRssiColor(d.rssi);
-  const bars      = getSignalBars(d.rssi);
+  const rssiColor = getRssiColor(displayRssi);
+  const bars      = getSignalBars(displayRssi);
   const ago       = timeAgo(d.lastSeen);
 
   return (
@@ -383,7 +384,7 @@ function DeviceCard({
             <WifiIcon bars={bars} color={rssiColor} />
           </div>
           <div style={{ fontSize: 13, fontWeight: 700, color: rssiColor }}>
-            {d.rssi === undefined ? "—" : d.rssi === -127 ? "None" : `${d.rssi}`}
+            {displayRssi === undefined ? "null" : displayRssi === -127 ? "None" : `${displayRssi}`}
           </div>
           <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>dBm</div>
         </div>
