@@ -2,8 +2,9 @@ from fastapi import FastAPI, Request, Depends, HTTPException, Body, WebSocket, W
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+import time
 import pytz  # type: ignore
 from db import (
     db,
@@ -160,20 +161,6 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600
 )
-
-@app.on_event("startup")
-async def startup_event():
-    # Keepalive to prevent render sleeping
-    async def keepalive_task():
-        while True:
-            try:
-                await asyncio.sleep(60)
-                await devices_collection.find_one({})
-                print("💓 Keepalive", flush=True)
-            except Exception as e:
-                logger.error(f"Keepalive: {e}")
-    asyncio.create_task(keepalive_task())
-
 
 # Helper function for Indian Standard Time
 def get_ist_time():
@@ -1421,7 +1408,7 @@ async def acknowledge_all():
 
 # Get recent alerts
 @app.get("/api/alerts/recent")
-async def recent_alerts(limit: int = 100, since: str = None, authorization: str = Header(None)):
+async def recent_alerts(limit: int = 100, since: Optional[str] = None, authorization: str = Header(None)):
     """Get alerts filtered by hotel and timestamp"""
     hotel_id = None
     role = None
