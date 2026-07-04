@@ -35,6 +35,12 @@ class SixSignalMonitor(private val context: Context) {
         private const val TAG = "SixSignalMonitor"
         private const val BREACH_COOLDOWN = 15_000L // 15 second cooldown between breach POSTs
         private const val PREFS_NAME = "hotel_prefs" // SharedPreferences name for config
+
+        // ← FIXED: Store breach locally when offline
+        @Volatile var lastBreachSentTime = 0L
+        @Volatile var isBreachActive = false
+        @Volatile var pendingBreachRssi: Int? = null
+        val DEDUP_WINDOW_MS = 30_000L
     }
 
     fun startMonitoring() {
@@ -104,78 +110,118 @@ class SixSignalMonitor(private val context: Context) {
         lastBreachSentTime = now
         Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId | RSSI: $rssi")
 
-        // Launch in a background thread — HTTPURLConnection is blocking
-        // We use a Thread instead of Coroutine because the dispatcher might be throttled when WiFi is off
-        Thread {
+        fireBreach(rssi)
+    }
+
+    // ← FIXED: Force -127 when WiFi is off
+    fun fireBreach(rssi: Int = -127) {
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val actualRssi = if (!wifiManager.isWifiEnabled) {
+            -127
+        } else {
+            rssi
+        }
+        
+        CoroutineScope(Dispatchers.IO).launch {
             var success = false
             
-            // ← FIXED: Try no-auth instant endpoint first for immediate breach detection
-            if (isImmediate) {
-                try {
-                    success = postBreach(backendUrl, "breach-instant", deviceId, roomId, rssi, deviceToken, requireAuth = false)
-                    if (success) {
-                        Log.i(TAG, "✅ Instant breach sent!")
-                        return@Thread
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Instant endpoint failed, trying JWT endpoint")
-                }
-            }
-            
-            val maxAttempts = 15
-            
-            // Fall back to JWT endpoint with retries
-            repeat(maxAttempts) { attempt ->
+            // ← Try immediate send (3 attempts fast)
+            // These will fail if WiFi is truly off
+            repeat(3) { attempt ->
                 if (success) return@repeat
-                
                 try {
-                    success = postBreach(backendUrl, "breach", deviceId, roomId, rssi, deviceToken, requireAuth = true)
-                    
-                    if (success) {
-                        Log.i(TAG, "✅ JWT breach success attempt ${attempt + 1}")
+                    val result = postBreachWithTimestamp(actualRssi, System.currentTimeMillis())
+                    if (result) {
+                        success = true
+                        pendingBreachRssi = null
+                        Log.i(TAG, "✅ Breach sent attempt ${attempt + 1}")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "❌ Attempt ${attempt + 1} failed: ${e.message}")
-                }
-                
-                if (!success) {
-                    // ← FIXED: Fast retry first 3 attempts then normal pace for Render wake
-                    val delayMs = if (attempt < 3) {
-                        1000L  // 1s for first 3 attempts
-                    } else {
-                        2000L  // 2s for remaining attempts
-                    }
-                    Thread.sleep(delayMs)
+                    Log.w(TAG, "Attempt ${attempt + 1} failed: ${e.message}")
+                    kotlinx.coroutines.delay(1000L)
                 }
             }
             
             if (!success) {
-                Log.e(TAG, "❌ All $maxAttempts breach attempts failed. Backend timeout will catch it.")
+                // ← WiFi is physically off
+                // Cannot reach internet
+                // Store breach locally to send later
+                Log.w(TAG, "⚠️ Cannot reach backend — WiFi is off. Storing breach for when connectivity returns.")
+                
+                // Save to SharedPreferences
+                context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
+                    .putBoolean("pending_breach", true)
+                    .putInt("pending_breach_rssi", actualRssi)
+                    .putLong("breach_detected_at", System.currentTimeMillis())
+                    .apply()
+                
+                pendingBreachRssi = actualRssi
             }
-        }.apply {
-            isDaemon = true
-            start()
         }
     }
 
-    private fun postBreach(
-        backendUrl: String,
-        endpoint: String,
-        deviceId: String,
-        roomId: String,
-        rssi: Int,
-        deviceToken: String,
-        requireAuth: Boolean
-    ): Boolean {
-        val url = URL("$backendUrl/api/alert/$endpoint")
+    // ← FIXED: Called when WiFi turns back ON
+    fun sendPendingBreach() {
+        val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val hasPending = prefs.getBoolean("pending_breach", false)
+        
+        if (!hasPending) return
+        
+        val pendingRssi = prefs.getInt("pending_breach_rssi", -127)
+        val breachTime = prefs.getLong("breach_detected_at", 0L)
+        
+        // ← Check breach is not too old (>10 min)
+        val ageMs = System.currentTimeMillis() - breachTime
+        if (ageMs > 10 * 60 * 1000L) {
+            // Too old — discard
+            clearPendingBreach()
+            Log.w(TAG, "Pending breach too old — discarded")
+            return
+        }
+        
+        Log.i(TAG, "📤 Sending pending breach from ${ageMs / 1000}s ago RSSI:$pendingRssi")
+        
+        CoroutineScope(Dispatchers.IO).launch {
+            val breachTimestamp = breachTime
+            
+            repeat(5) { attempt ->
+                try {
+                    val success = postBreachWithTimestamp(pendingRssi, breachTimestamp)
+                    if (success) {
+                        clearPendingBreach()
+                        Log.i(TAG, "✅ Pending breach sent!")
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Pending breach attempt ${attempt + 1} failed")
+                    kotlinx.coroutines.delay(2000L)
+                }
+            }
+        }
+    }
+
+    private fun clearPendingBreach() {
+        context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
+            .remove("pending_breach")
+            .remove("pending_breach_rssi")
+            .remove("breach_detected_at")
+            .apply()
+        pendingBreachRssi = null
+    }
+
+    private fun postBreachWithTimestamp(rssi: Int, breachTimestamp: Long): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val backendUrl = prefs.getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: "https://hotel-tablet-security.onrender.com"
+        val deviceToken = prefs.getString("device_token", "") ?: ""
+        val deviceId = prefs.getString("device_id", "") ?: ""
+        val roomId = prefs.getString("room_id", "") ?: ""
+        
+        val url = URL("$backendUrl/api/alert/breach")
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
-        if (requireAuth) {
-            conn.setRequestProperty("Authorization", "Bearer $deviceToken")
-        }
+        conn.setRequestProperty("Authorization", "Bearer $deviceToken")
         conn.doOutput = true
-        // ← FIXED: 5s timeout not 10s
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
         
@@ -183,18 +229,19 @@ class SixSignalMonitor(private val context: Context) {
             put("deviceId", deviceId)
             put("roomId", roomId)
             put("rssi", rssi)
-        }
+            // ← Send actual breach time so backend stores correct timestamp
+            put("breachTimestamp", breachTimestamp)
+        }.toString()
         
-        OutputStreamWriter(conn.outputStream).use {
-            it.write(body.toString())
-            it.flush()
+        OutputStreamWriter(conn.outputStream).use { 
+            it.write(body)
+            it.flush() 
         }
         
         val code = conn.responseCode
         conn.disconnect()
         return code in 200..299
     }
-
     private fun performSecurityCheck(skipConfirmationDelay: Boolean = false) {
         if (isStartupGracePeriod) {
             Log.d(TAG, "Startup grace period — ignoring Wi-Fi callback")

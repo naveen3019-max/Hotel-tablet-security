@@ -4,10 +4,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
 class ScreenAndWiFiReceiver : BroadcastReceiver() {
@@ -66,26 +71,22 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
 
                     when (wifiState) {
                         WifiManager.WIFI_STATE_DISABLING -> {
-                            // ← FIXED: DISABLING fires before DISABLED — fastest possible detection
-                            if (!breachAlreadySent) {
-                                breachAlreadySent = true
-                                Log.e(TAG, "🚨 WiFi DISABLING — instant breach!")
-
-                                val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
-                                    action = "WIFI_OFF_BREACH"
-                                    putExtra("IMMEDIATE_BREACH", true) // ← ADD THIS
-                                    putExtra("FORCED_RSSI", -127) // ← ADD THIS
-                                }
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    context.startForegroundService(serviceIntent)
-                                } else {
-                                    context.startService(serviceIntent)
-                                }
-
-                                // ← FIXED: Also trigger breach alert directly via companion object
-                                WiFiMonitoringService.triggerBreachAlert("WiFi Turned OFF (DISABLING state)", -127)
+                            Log.e(TAG, "🚨 WiFi DISABLING!")
+                            
+                            // ← FIXED: Set dedup flags
+                            SixSignalMonitor.lastBreachSentTime = SystemClock.elapsedRealtime()
+                            SixSignalMonitor.isBreachActive = true
+                            
+                            // ← FIXED: Start service with forced rssi=-127
+                            val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
+                                action = "WIFI_OFF_BREACH"
+                                putExtra("IMMEDIATE_BREACH", true)
+                                putExtra("FORCED_RSSI", -127)
+                            }
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                context.startForegroundService(serviceIntent)
                             } else {
-                                Log.d(TAG, "WiFi DISABLING — breach already sent, skipping duplicate.")
+                                context.startService(serviceIntent)
                             }
                         }
 
@@ -117,16 +118,26 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                         }
 
                         WifiManager.WIFI_STATE_ENABLED -> {
-                            // ← FIXED: Reset breach flag and breach timer when WiFi comes back ON
-                            Log.i(TAG, "✅ WiFi ENABLED — clearing breach")
-                            breachAlreadySent = false
-                            WiFiMonitoringService.lastBreachTime = 0L
-                            WiFiMonitoringService.instance?.sixSignalMonitor?.resetBreachState()
+                            Log.d(TAG, "✅ WiFi ENABLED")
                             
-                            // ← Send recovery notification to backend
-                            Thread {
-                                sendWifiRecovery(context)
-                            }.start()
+                            // ← FIXED: Wait 3 seconds for WiFi to stabilize
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                
+                                // ← FIXED: Send any pending breach first
+                                val monitor = SixSignalMonitor(context)
+                                monitor.sendPendingBreach()
+                                
+                                // ← FIXED: Reset breach flags AFTER sending pending breach
+                                SixSignalMonitor.isBreachActive = false
+                                SixSignalMonitor.lastBreachSentTime = 0L
+                                WiFiMonitoringService.lastBreachTime = 0L
+                                
+                                // ← FIXED: Send recovery heartbeat
+                                Thread {
+                                    sendRecoveryHeartbeat(context)
+                                }.start()
+                                
+                            }, 3000L) // 3 second delay
                         }
 
                         else -> {
@@ -155,34 +166,26 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun sendWifiRecovery(context: Context) {
+
+    // ← FIXED: Send recovery heartbeat without triggering new monitoring check
+    private fun sendRecoveryHeartbeat(context: Context) {
         try {
-            val prefs = context.getSharedPreferences(
-                "hotel_prefs", 
-                Context.MODE_PRIVATE
-            )
+            val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
             val token = prefs.getString("device_token", "") ?: ""
             val deviceId = prefs.getString("device_id", "") ?: ""
             val roomId = prefs.getString("room_id", "") ?: ""
             
             if (token.isEmpty()) return
             
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            
-            // Wait 2 seconds for WiFi to stabilize
+            // Wait extra 2s for network
             Thread.sleep(2000)
             
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val rssi = try {
                 wifiManager.connectionInfo?.rssi ?: -65
-            } catch (e: Exception) {
-                -65
-            }
+            } catch (e: Exception) { -65 }
             
-            val backendUrl = prefs.getString(
-                "backend_base_url",
-                "https://hotel-tablet-security.onrender.com"
-            ) ?: "https://hotel-tablet-security.onrender.com"
-
+            val backendUrl = prefs.getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: "https://hotel-tablet-security.onrender.com"
             val url = java.net.URL("$backendUrl/api/heartbeat")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
@@ -200,13 +203,13 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                 put("battery", 50)
             }.toString()
             
-            java.io.OutputStreamWriter(conn.outputStream).use { writer ->
-                writer.write(body)
-                writer.flush()
+            java.io.OutputStreamWriter(conn.outputStream).use { 
+                it.write(body)
+                it.flush() 
             }
             
             val code = conn.responseCode
-            Log.i(TAG, "✅ WiFi recovery heartbeat sent: $code")
+            Log.i(TAG, "✅ Recovery heartbeat: $code RSSI:$rssi")
             conn.disconnect()
             
         } catch (e: Exception) {

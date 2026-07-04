@@ -348,7 +348,8 @@ async def monitor_device_heartbeats():
 class Breach(BaseModel):
     deviceId: str
     roomId: str
-    rssi: int
+    rssi: int = -127
+    breachTimestamp: Optional[int] = None
     ts: Optional[datetime] = None
 
 class Battery(BaseModel):
@@ -939,70 +940,77 @@ async def breach_instant(
 @app.post("/api/alert/breach")
 async def alert_breach(b: Breach, device=Depends(get_current_device)):
     """Record breach alert (JWT protected)"""
-    # ALWAYS use server IST time (ignore device timestamp to prevent timezone issues)
-    b.ts = get_ist_time()
+    # ← Validate and correct RSSI
+    rssi = b.rssi
+    if rssi > -10:
+        rssi = -127
+        logger.warning(f"Invalid RSSI corrected to -127 for {b.deviceId}")
     
-    # Validate RSSI
-    if b.rssi > -10:
-        logger.warning(f"Invalid RSSI {b.rssi} corrected to -127")
-        b.rssi = -127
-
-    logger.warning(f"BREACH ALERT: Device {b.deviceId}, Room {b.roomId}, RSSI {b.rssi}")
+    # ← Use provided breach timestamp if valid
+    # This preserves WHEN breach happened even if POST arrives later
+    if b.breachTimestamp:
+        breach_age_ms = int(time.time() * 1000) - b.breachTimestamp
+        breach_age_s = breach_age_ms / 1000
+        
+        if breach_age_s < 600:
+            # Less than 10 minutes old — use it
+            breach_time = datetime.fromtimestamp(b.breachTimestamp / 1000, tz=pytz.utc).replace(tzinfo=None)
+            logger.info(f"Using device breach timestamp: {breach_age_s:.0f}s ago")
+        else:
+            # Too old — use current time
+            breach_time = get_utc_naive()
+    else:
+        breach_time = get_utc_naive()
     
-    # Update device status
-    await devices_collection.update_one(
-        {"_id": b.deviceId},
-        {
-            "$set": {
-                "status": StatusEnum.breach,
-                "rssi": b.rssi,
-                "last_seen": get_utc_naive(),
-                "roomId": b.roomId
-            }
-        },
-        upsert=True
-    )
+    # ← Deduplication check (30 seconds)
+    recent_cutoff = datetime.now(pytz.utc).replace(tzinfo=None) - timedelta(seconds=30)
     
-    # Create alert with proper deviceId and roomId fields
-    alert_data = {
+    existing = await alerts_collection.find_one({
+        "deviceId": b.deviceId,
+        "type": "breach",
+        "ts": {"$gte": recent_cutoff}
+    })
+    
+    if existing:
+        logger.info(f"Duplicate breach skipped: {b.deviceId}")
+        return {"ok": True, "duplicate": True}
+    
+    # ← Store breach with correct timestamp
+    alert_doc = {
         "deviceId": b.deviceId,
         "roomId": b.roomId,
         "type": "breach",
         "severity": "critical",
-        "message": f"WiFi disconnected - Device breach detected",
-        "rssi": b.rssi,
-        "ts": b.ts,
-        "acknowledged": False
+        "message": "WiFi disabled on device",
+        "rssi": rssi,
+        "ts": breach_time,
+        "acknowledged": False,
+        "hotel_id": device.get("hotel_id", "default")
     }
     
-    result = await alerts_collection.insert_one(alert_data)
-    logger.info(f"✅ STORED ALERT: deviceId={b.deviceId}, roomId={b.roomId}, _id={result.inserted_id}")
+    await alerts_collection.insert_one(alert_doc)
     
-    # Broadcast via Redis for SSE
-    # ← ADD hotel_id lookup
-    device_doc = await devices_collection.find_one({"_id": b.deviceId})
-    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+    # ← Update device status
+    await devices_collection.update_one(
+        {"_id": b.deviceId},
+        {"$set": {
+            "status": StatusEnum.breach,
+            "rssi": rssi,
+            "last_seen": get_utc_naive()
+        }}
+    )
     
-    await broadcast_event("device_update", {
-        "deviceId": b.deviceId,
-        "status": "breach",
-        "rssi": b.rssi
-    }, hotel_id=device_hotel_id) # ← ADD hotel_id
+    # ← Broadcast to hotel's WebSocket only
+    device_hotel_id = device.get("hotel_id", "default")
     
-    # ← FIXED: Added debug print BEFORE broadcast as requested
-    print(f"🚨 BREACH → broadcasting to WebSocket clients", flush=True)
     await broadcast_event("alert", {
         "type": "breach",
         "deviceId": b.deviceId,
         "roomId": b.roomId,
-        "rssi": b.rssi,
-        "message": "WiFi breach detected" # ← FIXED: added message field
-    }, hotel_id=device_hotel_id) # ← ADD hotel_id
-    
-    # Queue notification task
-    asyncio.create_task(
-        NotificationService.send_breach_alert(b.deviceId, b.roomId, b.rssi)
-    )
+        "rssi": rssi,
+        "message": "WiFi disabled on device",
+        "timestamp": to_ist_isoformat(breach_time)
+    }, hotel_id=device_hotel_id)
     
     return {"ok": True}
 
@@ -1204,11 +1212,10 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     # when device sends good heartbeat
     # This handles devices with NO room config
     # that get stuck in breach forever
-    if existing_status == StatusEnum.breach and \
-       h.rssi > -120 and \
-       h.wifiBssid not in ["02:00:00:00:00:00", "00:00:00:00:00:00"]:
+    # ← FIXED: Clear breach WITHOUT re-broadcasting old alerts
+    if existing_status == StatusEnum.breach and        h.rssi > -120 and        h.wifiBssid not in ["02:00:00:00:00:00", "00:00:00:00:00:00"]:
         
-        # Clear breach status in DB
+        # ← Clear breach
         await devices_collection.update_one(
             {"_id": h.deviceId},
             {"$set": {
@@ -1219,7 +1226,8 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
             }}
         )
         
-        # Broadcast recovery to dashboard instantly
+        # ← Broadcast ONLY recovery event
+        # NEVER broadcast old alerts here
         device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
         await broadcast_event("device_recovered", {
             "deviceId": h.deviceId,
@@ -1230,7 +1238,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
             "message": "WiFi restored"
         }, hotel_id=device_hotel_id)
         
-        logger.info(f"✅ BREACH CLEARED: {h.deviceId} WiFi restored RSSI:{h.rssi}")
+        logger.info(f"✅ Breach cleared: {h.deviceId} RSSI:{h.rssi}")
         
         return {"ok": True, "status": "recovered"}
     
