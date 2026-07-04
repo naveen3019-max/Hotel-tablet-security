@@ -141,20 +141,6 @@ async def lifespan(app: FastAPI):
         logger.info("Heartbeat monitoring stopped")
 
 app = FastAPI(
-
-@app.on_event("startup")
-async def startup_event():
-    # Keepalive to prevent render sleeping
-    async def keepalive_task():
-        while True:
-            try:
-                await asyncio.sleep(60)
-                await devices_collection.find_one({})
-                print("💓 Keepalive", flush=True)
-            except Exception as e:
-                logger.error(f"Keepalive: {e}")
-    asyncio.create_task(keepalive_task())
-
     title="Hotel Tablet Security API",
     version="0.6.0",
     debug=settings.debug,
@@ -174,6 +160,20 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=3600
 )
+
+@app.on_event("startup")
+async def startup_event():
+    # Keepalive to prevent render sleeping
+    async def keepalive_task():
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await devices_collection.find_one({})
+                print("💓 Keepalive", flush=True)
+            except Exception as e:
+                logger.error(f"Keepalive: {e}")
+    asyncio.create_task(keepalive_task())
+
 
 # Helper function for Indian Standard Time
 def get_ist_time():
