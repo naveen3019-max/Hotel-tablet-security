@@ -339,17 +339,29 @@ class ProvisioningActivity : AppCompatActivity() {
 
                     statusText.text = "✅ Registration complete! Starting security monitoring..."
 
-                    // ← NEW: Start services immediately so monitoring is live.
-                    startMonitoringServices()
-
-                    // ← NEW: Wait 3 seconds so the success toast is readable,
-                    //   then hide the launcher icon and close this activity.
-                    //   We use Handler(mainLooper) instead of postDelayed on a
-                    //   coroutine so it always runs on the UI thread safely.
+                    // ← Navigate to MainActivity after 2 seconds so the toast is readable.
+                    //   MainActivity handles:
+                    //   1. Runtime permission requests (location, notifications)
+                    //   2. startForegroundService(KioskService)  — after permission check
+                    //   3. hideAppIcon() safety net — hides launcher icon silently
+                    //
+                    //   We do NOT call startMonitoringServices() here because the
+                    //   location permission has NOT been granted yet at this point.
+                    //   Calling startForeground() with connectedDevice type is safe
+                    //   without location, so this path works correctly.
                     Handler(Looper.getMainLooper()).postDelayed({
-                        hideAppIcon()    // ← NEW: icon disappears from launcher
-                        finishAffinity() // ← NEW: close all activities in this task
-                    }, 3_000L)
+                        val intent = Intent(
+                            this@ProvisioningActivity,
+                            com.example.hotel.MainActivity::class.java
+                        ).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TASK
+                            )
+                        }
+                        startActivity(intent)
+                        // finish() is implicit due to FLAG_ACTIVITY_CLEAR_TASK
+                    }, 2_000L)
                 }
                 
             } catch (e: Exception) {

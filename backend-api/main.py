@@ -941,6 +941,12 @@ async def alert_breach(b: Breach, device=Depends(get_current_device)):
     """Record breach alert (JWT protected)"""
     # ALWAYS use server IST time (ignore device timestamp to prevent timezone issues)
     b.ts = get_ist_time()
+    
+    # Validate RSSI
+    if b.rssi > -10:
+        logger.warning(f"Invalid RSSI {b.rssi} corrected to -127")
+        b.rssi = -127
+
     logger.warning(f"BREACH ALERT: Device {b.deviceId}, Room {b.roomId}, RSSI {b.rssi}")
     
     # Update device status
@@ -1200,15 +1206,18 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     # that get stuck in breach forever
     if existing_status == StatusEnum.breach and \
        h.rssi > -120 and \
-       h.wifiBssid != "02:00:00:00:00:00":
+       h.wifiBssid not in ["02:00:00:00:00:00", "00:00:00:00:00:00"]:
         
-        logger.info(
-            f"✅ AUTO BREACH CLEAR: {h.deviceId} "
-            f"sending good heartbeat "
-            f"RSSI:{h.rssi} dBm"
+        # Clear breach status in DB
+        await devices_collection.update_one(
+            {"_id": h.deviceId},
+            {"$set": {
+                "status": StatusEnum.ok,
+                "rssi": h.rssi,
+                "battery": h.battery,
+                "last_seen": get_utc_naive()
+            }}
         )
-        
-        new_status = StatusEnum.ok
         
         # Broadcast recovery to dashboard instantly
         device_hotel_id = current_device.get("hotel_id", "default") if current_device else "default"
@@ -1217,9 +1226,13 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
             "roomId": h.roomId,
             "rssi": h.rssi,
             "battery": h.battery,
-            "message": "Device WiFi restored - "
-                       "good heartbeat received"
+            "status": "ok",
+            "message": "WiFi restored"
         }, hotel_id=device_hotel_id)
+        
+        logger.info(f"✅ BREACH CLEARED: {h.deviceId} WiFi restored RSSI:{h.rssi}")
+        
+        return {"ok": True, "status": "recovered"}
     
     # Get room configuration to check against
     room = await rooms_collection.find_one({"_id": h.roomId})
@@ -1386,8 +1399,8 @@ async def acknowledge_all():
 
 # Get recent alerts
 @app.get("/api/alerts/recent")
-async def recent_alerts(limit: int = 100, authorization: str = Header(None)):
-    """Get alerts filtered by hotel"""
+async def recent_alerts(limit: int = 100, since: str = None, authorization: str = Header(None)):
+    """Get alerts filtered by hotel and timestamp"""
     hotel_id = None
     role = None
     
@@ -1406,6 +1419,14 @@ async def recent_alerts(limit: int = 100, authorization: str = Header(None)):
     
     query = {}
     
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            since_naive = since_dt.replace(tzinfo=None)
+            query["ts"] = {"$gt": since_naive}
+        except Exception:
+            pass
+            
     if role != "super_admin" and hotel_id:
         # ← FIXED: Filter alerts by devices belonging to this hotel
         hotel_device_ids = await devices_collection.find(

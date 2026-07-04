@@ -544,6 +544,7 @@ export default function Dashboard() {
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
   const [sessionCount, setSessionCount] = useState<number>(0);
+  const [lastAlertTime, setLastAlertTime] = useState<string>("");
 
   const toastIdCounter = useRef(0);
   const { lastMessage, status: connectionStatus } = useWebSocket(API, user?.token || "");
@@ -600,25 +601,37 @@ export default function Dashboard() {
         if (breachDeviceId) {
           setDevices((prev) => prev.map((dev) => dev.deviceId === breachDeviceId ? { ...dev, status: "breach" } : dev));
         }
+        const alertTime = ((lastMessage as Record<string, unknown>).timestamp as string | undefined) ?? new Date().toISOString();
+        const alertId = `${breachDeviceId}${alertTime}`;
+        
         const newAlert: Alert = {
+          id: alertId,
           type: "breach",
           deviceId: (breachDeviceId as string) || "Unknown",
           roomId: d?.roomId as string | undefined,
-          ts: ((lastMessage as Record<string, unknown>).timestamp as string | undefined) ?? new Date().toISOString(),
+          ts: alertTime,
           acknowledged: false,
           message: d?.message as string | undefined,
         };
-        setAlerts((prev) => [newAlert, ...prev].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100));
-        if (breachDeviceId) {
-          addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
+        
+        setAlerts((prev) => {
+          const exists = prev.some((a) => a.id === newAlert.id || (a.deviceId === newAlert.deviceId && a.ts === newAlert.ts));
+          if (exists) return prev;
           
-          if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
-            const notif = new Notification("🚨 SECURITY BREACH DETECTED", {
-              body: `Device ${breachDeviceId} ${d?.roomId ? `(Room ${d.roomId})` : ""} - ${d?.message || "Immediate attention required"}`,
-            });
-            notif.onclick = () => { window.focus(); notif.close(); };
+          if (breachDeviceId) {
+            addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
+            if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+              const notif = new Notification("🚨 SECURITY BREACH DETECTED", {
+                body: `Device ${breachDeviceId} ${d?.roomId ? `(Room ${d.roomId})` : ""} - ${d?.message || "Immediate attention required"}`,
+              });
+              notif.onclick = () => { window.focus(); notif.close(); };
+            }
           }
-        }
+          
+          return [newAlert, ...prev].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100);
+        });
+        
+        setLastAlertTime(alertTime);
       }
 
       if (lastMessage?.type === "device_update" && d?.deviceId) {
@@ -630,7 +643,7 @@ export default function Dashboard() {
       }
 
       if (lastMessage?.type === "device_recovered" && d?.deviceId) {
-        setDevices((prev) => prev.map((dev) => dev.deviceId === d.deviceId ? { ...dev, status: "ok" } : dev));
+        setDevices((prev) => prev.map((dev) => dev.deviceId === d.deviceId ? { ...dev, status: "ok", rssi: (d.rssi as number) ?? dev.rssi } : dev));
       }
 
       if (type === "device_offline" || type === "device_deleted") {

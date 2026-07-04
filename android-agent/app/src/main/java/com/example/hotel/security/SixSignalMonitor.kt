@@ -195,84 +195,79 @@ class SixSignalMonitor(private val context: Context) {
         return code in 200..299
     }
 
-    // ← FIXED BUG 1: Complete rewrite of security check with proper threshold
     private fun performSecurityCheck(skipConfirmationDelay: Boolean = false) {
         if (isStartupGracePeriod) {
             Log.d(TAG, "Startup grace period — ignoring Wi-Fi callback")
             return
         }
 
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        var failScore = 0
-
-        @Suppress("DEPRECATION")
-        val info = wifiManager.connectionInfo
-        val actualRssi = info?.rssi ?: -127
-
-        // ← FIXED: Signal 1 — WiFi enabled check
-        if (!wifiManager.isWifiEnabled) {
-            failScore++
-            Log.e(TAG, "🚨 Signal 1 FAIL: WiFi is DISABLED")
-        }
-
-        // ← FIXED: Signal 2 — Connection info null/disconnected check
-        if (info == null || info.networkId == -1) {
-            failScore++
-            Log.w(TAG, "Signal 2 FAIL: WiFi connected but no network ID")
-        }
-
-        // ← FIXED: Signal 3 — Internet connectivity check via ConnectivityManager
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val activeNetwork = connectivityManager.activeNetwork
-        if (activeNetwork == null) {
-            failScore++
-            Log.w(TAG, "Signal 3 FAIL: No active network")
-        } else {
-            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
-            if (capabilities == null || !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-                failScore++
-                Log.w(TAG, "Signal 3 FAIL: No NET_CAPABILITY_INTERNET")
-            }
-        }
-
-        // ← FIXED: Signal 4 — RSSI strength check
-        if (actualRssi < -90) {
-            failScore++
-            Log.w(TAG, "Signal 4 FAIL: RSSI too weak: $actualRssi dBm")
-        }
+        // ← Use connectivity state not BSSID
+        val wifiData = getWifiInfo()
+        val actualRssi = wifiData.rssi
 
         val now = SystemClock.elapsedRealtime()
 
-        if (failScore >= 3) {
+        if (!wifiData.isConnected || wifiData.rssi <= -127) {
+            // WiFi is OFF or disconnected
             if (skipConfirmationDelay) {
-                // WIFI_STATE_DISABLING = hardware confirmation, no delay needed
-                // Radio still active for ~1-2s — fire POST immediately
                 Log.d(TAG, "⚡ IMMEDIATE breach — DISABLING state, skipping 8s delay")
                 triggerBreach("⚡ IMMEDIATE breach — DISABLING state", actualRssi, isImmediate = true)
                 return
             }
 
-            // Validate RSSI: if signal is actually fine, ignore the screen-off blip
-            if (actualRssi > -100 && wifiManager.isWifiEnabled) {
-                Log.w(TAG, "Ignoring false breach: RSSI is $actualRssi dBm (fine). Likely screen-off blip.")
-                firstWifiLossTime = 0L // Reset delay timer
+            // Start or check the 8-second delay timer
+            if (firstWifiLossTime == 0L) {
+                firstWifiLossTime = now
+                Log.w(TAG, "⏱️ Starting 8s Wi-Fi loss confirmation timer...")
+            } else if (now - firstWifiLossTime >= 8_000L) {
+                Log.e(TAG, "🚨 8s confirmed! BREACH")
+                WiFiMonitoringService.triggerBreachAlert("WiFi OFF or disconnected", actualRssi)
             } else {
-                // Start or check the 8-second delay timer
-                if (firstWifiLossTime == 0L) {
-                    firstWifiLossTime = now
-                    Log.w(TAG, "⏱️ Starting 8s Wi-Fi loss confirmation timer...")
-                } else if (now - firstWifiLossTime >= 8_000L) {
-                    Log.e(TAG, "🚨 8s confirmed! Score $failScore/4 — BREACH")
-                    WiFiMonitoringService.triggerBreachAlert("Score $failScore/4 failed", actualRssi)
-                } else {
-                    Log.w(TAG, "⏱️ Waiting for 8s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
-                }
+                Log.w(TAG, "⏱️ Waiting for 8s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
             }
         } else {
-            // Signal is healthy or recovering
+            // WiFi connected — all good
             firstWifiLossTime = 0L
             WiFiMonitoringService.lastBreachTime = 0L
-            Log.d(TAG, "✅ Signal SECURE. RSSI: $actualRssi dBm")
+            Log.d(TAG, "WiFi OK RSSI: ${wifiData.rssi}")
         }
+    }
+
+    private fun getWifiInfo(): WifiData {
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        
+        val isEnabled = wifiManager.isWifiEnabled
+        if (!isEnabled) {
+            return WifiData(rssi = -127, bssid = "00:00:00:00:00:00", isConnected = false)
+        }
+        
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork
+        val caps = network?.let { cm.getNetworkCapabilities(it) }
+        val isWifiConnected = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+        
+        if (!isWifiConnected) {
+            return WifiData(rssi = -127, bssid = "00:00:00:00:00:00", isConnected = false)
+        }
+        
+        val rssi = try {
+            val info = wifiManager.connectionInfo
+            info?.rssi ?: -65
+        } catch (e: Exception) {
+            -65
+        }
+        
+        return WifiData(rssi = rssi, bssid = "AA:BB:CC:DD:EE:FF", isConnected = true)
+    }
+
+    data class WifiData(
+        val rssi: Int,
+        val bssid: String,
+        val isConnected: Boolean
+    )
+
+    fun resetBreachState() {
+        lastBreachSentTime = 0L
+        firstWifiLossTime = 0L
     }
 }

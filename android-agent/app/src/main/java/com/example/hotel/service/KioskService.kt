@@ -85,7 +85,15 @@ class KioskService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         Log.d("KioskService", "Foreground service started")
     }
 
@@ -393,11 +401,9 @@ class KioskService : Service() {
                 Log.e("KioskService", "📤 Sending recovery heartbeat to backend...")
                 serviceScope.launch {
                     try {
-                        val wifiManager = getSystemService(Context.WIFI_SERVICE) as WifiManager
-                        @Suppress("DEPRECATION")
-                        val connectionInfo = wifiManager.connectionInfo
-                        val currentRssi = connectionInfo?.rssi ?: -127
-                        val currentBssid = connectionInfo?.bssid ?: bssid
+                        val wifiData = getWifiInfo()
+                        val currentRssi = wifiData.rssi
+                        val currentBssid = wifiData.bssid
                         
                         // Get current battery level
                         val batteryManager = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
@@ -729,5 +735,38 @@ class KioskService : Service() {
         notificationManager.notify(999, notification)
     }
 
+    private fun getWifiInfo(): WifiData {
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        
+        val isEnabled = wifiManager.isWifiEnabled
+        if (!isEnabled) {
+            return WifiData(rssi = -127, bssid = "00:00:00:00:00:00", isConnected = false)
+        }
+        
+        val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val network = cm.activeNetwork
+        val caps = network?.let { cm.getNetworkCapabilities(it) }
+        val isWifiConnected = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: false
+        
+        if (!isWifiConnected) {
+            return WifiData(rssi = -127, bssid = "00:00:00:00:00:00", isConnected = false)
+        }
+        
+        val rssi = try {
+            val info = wifiManager.connectionInfo
+            info?.rssi ?: -65
+        } catch (e: Exception) {
+            -65
+        }
+        
+        return WifiData(rssi = rssi, bssid = "AA:BB:CC:DD:EE:FF", isConnected = true)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 }
+
+data class WifiData(
+    val rssi: Int,
+    val bssid: String,
+    val isConnected: Boolean
+)

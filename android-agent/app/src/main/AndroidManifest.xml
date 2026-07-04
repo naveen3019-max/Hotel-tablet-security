@@ -6,12 +6,9 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- Required for FOREGROUND_SERVICE_TYPE_DATA_SYNC — tells Android this service
          syncs data continuously. Without this the startForeground() call with
          DATA_SYNC type will throw a SecurityException on API 34+. -->
@@ -33,6 +30,8 @@
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Hotel Agent"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 
@@ -109,7 +108,7 @@
             android:name=".service.KioskService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|location"
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
 
         <receiver
@@ -157,7 +156,7 @@
             android:name=".security.WiFiMonitoringService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|location|dataSync"
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="false">
             <intent-filter>
                 <action android:name="DOZE_ALARM" />
@@ -168,7 +167,7 @@
             android:name=".security.WatchdogService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice"
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="false">
             <intent-filter>
                 <action android:name="WATCHDOG_ALARM" />
