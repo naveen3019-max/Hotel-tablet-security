@@ -458,7 +458,7 @@ async def create_device_token(payload: DeviceRegister):
 async def create_user_token(
     username: str = Body(...),
     password: str = Body(...),
-    request: Optional[Request] = None
+    request: Request
 ):
     """Issue JWT token for user (staff/admin)"""
     user = await hotels_collection.find_one({"username": username})
