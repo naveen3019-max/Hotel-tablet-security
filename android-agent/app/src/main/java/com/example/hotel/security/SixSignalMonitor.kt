@@ -11,6 +11,9 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -41,6 +44,9 @@ class SixSignalMonitor(private val context: Context) {
         @Volatile var isBreachActive = false
         @Volatile var pendingBreachRssi: Int? = null
         val DEDUP_WINDOW_MS = 30_000L
+        @Volatile private var instance: SixSignalMonitor? = null
+        fun getInstance(): SixSignalMonitor? = instance
+        fun setInstance(monitor: SixSignalMonitor) { instance = monitor }
     }
 
     fun startMonitoring() {
@@ -113,7 +119,8 @@ class SixSignalMonitor(private val context: Context) {
         fireBreach(rssi)
     }
 
-    // ← FIXED: Force -127 when WiFi is off
+    private val breachLock = Mutex()
+
     fun fireBreach(rssi: Int = -127) {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val actualRssi = if (!wifiManager.isWifiEnabled) {
@@ -123,45 +130,59 @@ class SixSignalMonitor(private val context: Context) {
         }
         
         CoroutineScope(Dispatchers.IO).launch {
-            var success = false
-            
-            // ← Try immediate send (3 attempts fast)
-            // These will fail if WiFi is truly off
-            repeat(3) { attempt ->
-                if (success) return@repeat
-                try {
-                    val result = postBreachWithTimestamp(actualRssi, System.currentTimeMillis())
-                    if (result) {
-                        success = true
-                        pendingBreachRssi = null
-                        Log.i(TAG, "✅ Breach sent attempt ${attempt + 1}")
+            breachLock.withLock {
+                var success = false
+                val breachTime = System.currentTimeMillis()
+                
+                repeat(3) { attempt ->
+                    if (success) return@repeat
+                    try {
+                        val result = postBreachWithTimestamp(actualRssi, breachTime)
+                        if (result) {
+                            success = true
+                            pendingBreachRssi = null
+                            Log.i(TAG, "✅ Breach sent attempt ${attempt + 1}")
+                            clearPendingBreach()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Attempt ${attempt + 1} failed: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Attempt ${attempt + 1} failed: ${e.message}")
-                    kotlinx.coroutines.delay(1000L)
+                    if (!success) kotlinx.coroutines.delay(1000L)
                 }
-            }
-            
-            if (!success) {
-                // ← WiFi is physically off
-                // Cannot reach internet
-                // Store breach locally to send later
-                Log.w(TAG, "⚠️ Cannot reach backend — WiFi is off. Storing breach for when connectivity returns.")
                 
-                // Save to SharedPreferences
-                context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
-                    .putBoolean("pending_breach", true)
-                    .putInt("pending_breach_rssi", actualRssi)
-                    .putLong("breach_detected_at", System.currentTimeMillis())
-                    .apply()
+                if (success) return@withLock
                 
-                pendingBreachRssi = actualRssi
+                repeat(12) { attempt ->
+                    if (success) return@repeat
+                    try {
+                        val result = postBreachWithTimestamp(actualRssi, breachTime)
+                        if (result) {
+                            success = true
+                            pendingBreachRssi = null
+                            Log.i(TAG, "✅ Breach sent attempt ${attempt + 4}")
+                            clearPendingBreach()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Attempt ${attempt + 4} failed: ${e.message}")
+                    }
+                    if (!success) kotlinx.coroutines.delay(2000L)
+                }
+                
+                if (!success) {
+                    Log.w(TAG, "⚠️ All attempts failed. Storing breach locally.")
+                    context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("pending_breach", true)
+                        .putInt("pending_breach_rssi", actualRssi)
+                        .putLong("breach_detected_at", breachTime)
+                        .apply()
+                    pendingBreachRssi = actualRssi
+                }
             }
         }
     }
 
     // ← FIXED: Called when WiFi turns back ON
-    fun sendPendingBreach() {
+    fun sendPendingBreachIfExists() {
         val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
         val hasPending = prefs.getBoolean("pending_breach", false)
         
@@ -222,7 +243,7 @@ class SixSignalMonitor(private val context: Context) {
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Authorization", "Bearer $deviceToken")
         conn.doOutput = true
-        conn.connectTimeout = 5000
+        conn.connectTimeout = 3000
         conn.readTimeout = 5000
         
         val body = JSONObject().apply {

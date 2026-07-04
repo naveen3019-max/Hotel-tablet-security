@@ -32,6 +32,8 @@ import com.example.hotel.data.BreachRequest
 import com.example.hotel.data.BatteryRequest
 import com.example.hotel.service.OfflineQueueManager
 import kotlinx.coroutines.*
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Foreground Service to keep WiFi and Battery monitoring alive
@@ -51,6 +53,38 @@ class KioskService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var isRunning = false
     private var heartbeatJob: Job? = null
+
+    private fun startKeepalive() {
+        CoroutineScope(Dispatchers.IO).launch {
+            while (true) {
+                try {
+                    delay(60_000L) // every 60s
+                    pingBackend()
+                    Log.d("KioskService", "💓 Keepalive ping sent")
+                } catch (e: Exception) {
+                    Log.w("KioskService", "Keepalive failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private suspend fun pingBackend() {
+        try {
+            val backendUrl = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+                .getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: return
+            
+            val url = URL("$backendUrl/health")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            val code = conn.responseCode
+            conn.disconnect()
+            Log.d("KioskService", "✅ Render ping: $code")
+        } catch (e: Exception) {
+            Log.w("KioskService", "Ping failed: ${e.message}")
+        }
+    }
 
     companion object {
         const val CHANNEL_ID = "HotelKioskService"
@@ -94,6 +128,7 @@ class KioskService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        startKeepalive()
         Log.d("KioskService", "Foreground service started")
     }
 

@@ -545,7 +545,7 @@ export default function Dashboard() {
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
   const [sessionCount, setSessionCount] = useState<number>(0);
   const [lastAlertTime, setLastAlertTime] = useState<string>("");
-  const [shownAlertIds, setShownAlertIds] = useState<Set<string>>(new Set());
+  const shownAlertIds = useRef<Set<string>>(new Set());
 
   const toastIdCounter = useRef(0);
   const { lastMessage, status: connectionStatus } = useWebSocket(API, user?.token || "");
@@ -603,18 +603,12 @@ export default function Dashboard() {
           setDevices((prev) => prev.map((dev) => dev.deviceId === breachDeviceId ? { ...dev, status: "breach" } : dev));
         }
         const alertTime = ((lastMessage as Record<string, unknown>).timestamp as string | undefined) ?? new Date().toISOString();
-        const alertId = `${breachDeviceId}${alertTime}`;
+        const alertId = `${breachDeviceId}_${alertTime}`;
         
-        // ← Skip if already shown
-        if (shownAlertIds.has(alertId)) {
+        if (shownAlertIds.current.has(alertId)) {
           return;
         }
-        
-        setShownAlertIds((prev) => {
-          const next = new Set(prev);
-          next.add(alertId);
-          return next;
-        });
+        shownAlertIds.current.add(alertId);
         
         const newAlert: Alert = {
           id: alertId,
