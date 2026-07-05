@@ -58,7 +58,10 @@ class KioskService : Service() {
         CoroutineScope(Dispatchers.IO).launch {
             while (true) {
                 try {
-                    delay(60_000L) // every 60s
+                    delay(30_000L) // ← every 30s
+                    // Render needs ping every 30s
+                    // to guarantee it stays awake
+                    // 60s gaps allow partial sleep state // every 60s
                     pingBackend()
                     Log.d("KioskService", "💓 Keepalive ping sent")
                 } catch (e: Exception) {

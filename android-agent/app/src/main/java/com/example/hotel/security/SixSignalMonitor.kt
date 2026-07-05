@@ -86,96 +86,122 @@ class SixSignalMonitor(private val context: Context) {
     }
 
     // ← FIXED BUG 2: triggerBreach now actually sends HTTP POST to backend
-    fun triggerBreach(reason: String, rssi: Int, isImmediate: Boolean = false) {
+    fun triggerBreach(
+        reason: String,
+        rssi: Int,
+        isImmediate: Boolean = false
+    ) {
         val now = SystemClock.elapsedRealtime()
-
-        // ← FIXED: Use companion object variable
-        // not instance variable (was duplicate bug)
-        if (now - Companion.lastBreachSentTime < BREACH_COOLDOWN) {
+        
+        // Dedup check
+        if (now - Companion.lastBreachSentTime < 
+            BREACH_COOLDOWN) {
             Log.w(TAG, "Breach cooldown — skip")
             return
         }
-
-        // ← FIXED: Read config from SharedPreferences
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val backendUrl = prefs.getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: "https://hotel-tablet-security.onrender.com"
-        val deviceToken = prefs.getString("device_token", "") ?: ""
-        val deviceId = prefs.getString("device_id", "") ?: ""
-        val roomId = prefs.getString("room_id", "") ?: ""
-
-        // Validate deviceId and roomId are non-empty
-        if (deviceId.isEmpty() || roomId.isEmpty() || deviceId == "UNKNOWN" || roomId == "UNKNOWN") {
-            Log.e(TAG, "❌ Cannot send breach: deviceId or roomId is null/empty!")
+        
+        val prefs = context.getSharedPreferences(
+            PREFS_NAME, Context.MODE_PRIVATE)
+        val deviceId = prefs.getString(
+            "device_id", "") ?: ""
+        val roomId = prefs.getString(
+            "room_id", "") ?: ""
+        
+        if (deviceId.isEmpty() || 
+            deviceId == "UNKNOWN" ||
+            roomId.isEmpty()) {
+            Log.e(TAG, "No deviceId — cannot breach")
             return
         }
-
-        if (deviceToken.isEmpty()) {
-            Log.e(TAG, "❌ Cannot send breach: device_token is empty in SharedPreferences!")
-            return
-        }
-
-        // ← FIXED: Update companion variable
+        
         Companion.lastBreachSentTime = now
         Companion.isBreachActive = true
-
-        Log.e(TAG, "🚨 BREACH: $reason | Device:$deviceId RSSI:$rssi")
-
-        // ← FIXED: Call fireBreach directly
-        // Do NOT go through WiFiMonitoringService
-        // which may have additional delays
-        fireBreach(rssi = rssi)
+        
+        Log.e(TAG,
+            "🚨 BREACH: $reason " +
+            "Device:$deviceId RSSI:$rssi")
+        
+        // ← Call fireBreach directly
+        fireBreach(rssi = if (rssi > -10) -127 
+                          else rssi)
     }
 
     private val breachLock = Mutex()
 
     fun fireBreach(rssi: Int = -127) {
-        // ← FIXED: Do NOT override rssi
-        // The caller already set correct rssi
-        // Old code was reading WifiManager
-        // which returns cached value not -127
-        val actualRssi = rssi  // trust the caller
+        val actualRssi = rssi // trust caller
+        val breachTime = System.currentTimeMillis()
         
-        CoroutineScope(Dispatchers.IO).launch {
-            breachLock.withLock {
+        // ← Use Thread not coroutine
+        // Thread survives Doze with WakeLock
+        Thread {
+            // ← Acquire WakeLock to prevent
+            // Android from killing this thread
+            import android.os.PowerManager
+            val pm = context.getSystemService(
+                Context.POWER_SERVICE
+            ) as PowerManager
+            
+            val wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "HotelSecurity::BreachPost"
+            )
+            
+            // ← Acquire for max 60 seconds
+            // Enough for all retry attempts
+            wakeLock.acquire(60_000L)
+            
+            try {
                 var success = false
-                val breachTime = System.currentTimeMillis()
                 
-                repeat(3) { attempt ->
-                    if (success) return@repeat
+                // First 3 attempts: 1s apart
+                for (attempt in 0..2) {
+                    if (success) break
                     try {
-                        val result = postBreachWithTimestamp(actualRssi, breachTime)
-                        if (result) {
-                            success = true
-                            pendingBreachRssi = null
-                            Log.i(TAG, "✅ Breach sent attempt ${attempt + 1}")
+                        success = postBreachWithTimestamp(
+                            actualRssi, breachTime)
+                        if (success) {
+                            Log.i(TAG,
+                                "✅ Breach sent " +
+                                "attempt ${attempt+1}")
                             clearPendingBreach()
+                            break
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Attempt ${attempt + 1} failed: ${e.message}")
+                        Log.w(TAG,
+                            "Attempt ${attempt+1}: " +
+                            "${e.message}")
                     }
-                    if (!success) kotlinx.coroutines.delay(1000L)
+                    if (!success) Thread.sleep(1000L)
                 }
                 
-                if (success) return@withLock
+                if (success) return@Thread
                 
-                repeat(12) { attempt ->
-                    if (success) return@repeat
+                // Next 12 attempts: 2s apart
+                for (attempt in 0..11) {
+                    if (success) break
                     try {
-                        val result = postBreachWithTimestamp(actualRssi, breachTime)
-                        if (result) {
-                            success = true
-                            pendingBreachRssi = null
-                            Log.i(TAG, "✅ Breach sent attempt ${attempt + 4}")
+                        success = postBreachWithTimestamp(
+                            actualRssi, breachTime)
+                        if (success) {
+                            Log.i(TAG,
+                                "✅ Breach sent " +
+                                "attempt ${attempt+4}")
                             clearPendingBreach()
+                            break
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Attempt ${attempt + 4} failed: ${e.message}")
+                        Log.w(TAG,
+                            "Attempt ${attempt+4}: " +
+                            "${e.message}")
                     }
-                    if (!success) kotlinx.coroutines.delay(2000L)
+                    if (!success) Thread.sleep(2000L)
                 }
                 
                 if (!success) {
-                    Log.w(TAG, "⚠️ All attempts failed. Storing breach locally.")
+                    Log.w(TAG,
+                        "⚠️ All 15 failed. " +
+                        "Storing breach locally.")
                     context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
                         .putBoolean("pending_breach", true)
                         .putInt("pending_breach_rssi", actualRssi)
@@ -183,7 +209,17 @@ class SixSignalMonitor(private val context: Context) {
                         .apply()
                     pendingBreachRssi = actualRssi
                 }
+                
+            } finally {
+                // ← ALWAYS release WakeLock
+                if (wakeLock.isHeld) {
+                    wakeLock.release()
+                }
             }
+            
+        }.apply { 
+            isDaemon = false // ← Keep thread alive
+            start() 
         }
     }
 
@@ -236,59 +272,81 @@ class SixSignalMonitor(private val context: Context) {
         pendingBreachRssi = null
     }
 
-    private fun postBreachWithTimestamp(rssi: Int, breachTimestamp: Long): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val backendUrl = prefs.getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: "https://hotel-tablet-security.onrender.com"
-        val deviceToken = prefs.getString("device_token", "") ?: ""
-        val deviceId = prefs.getString("device_id", "") ?: ""
-        val roomId = prefs.getString("room_id", "") ?: ""
+    private fun postBreachWithTimestamp(
+        rssi: Int,
+        breachTimestamp: Long
+    ): Boolean {
+        val prefs = context.getSharedPreferences(
+            PREFS_NAME, Context.MODE_PRIVATE)
+        val backendUrl = prefs.getString(
+            "backend_base_url",
+            "https://hotel-tablet-security.onrender.com"
+        ) ?: return false
+        val deviceToken = prefs.getString(
+            "device_token", "") ?: return false
+        val deviceId = prefs.getString(
+            "device_id", "") ?: return false
+        val roomId = prefs.getString(
+            "room_id", "") ?: return false
         
-        val url = URL("$backendUrl/api/alert/breach")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Authorization", "Bearer $deviceToken")
-        conn.doOutput = true
-        conn.connectTimeout = 3000
-        conn.readTimeout = 5000
+        if (deviceToken.isEmpty() ||
+            deviceId.isEmpty()) return false
         
-        val body = JSONObject().apply {
-            put("deviceId", deviceId)
-            put("roomId", roomId)
-            put("rssi", rssi)
-            // ← Send actual breach time so backend stores correct timestamp
-            put("breachTimestamp", breachTimestamp)
-        }.toString()
-        
-        OutputStreamWriter(conn.outputStream).use { 
-            it.write(body)
-            it.flush() 
+        return try {
+            val url = URL(
+                "$backendUrl/api/alert/breach")
+            val conn = url.openConnection()
+                as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty(
+                "Content-Type", "application/json")
+            conn.setRequestProperty(
+                "Authorization", "Bearer $deviceToken")
+            conn.doOutput = true
+            // ← SHORT timeouts so retry fast
+            conn.connectTimeout = 5000  // 5s
+            conn.readTimeout = 5000     // 5s
+            
+            val body = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("roomId", roomId)
+                put("rssi", rssi)
+                put("breachTimestamp", breachTimestamp)
+            }.toString()
+            
+            OutputStreamWriter(conn.outputStream)
+                .use { 
+                    it.write(body)
+                    it.flush() 
+                }
+            
+            val code = conn.responseCode
+            conn.disconnect()
+            
+            Log.i(TAG, "POST breach: $code")
+            code in 200..299
+            
+        } catch (e: Exception) {
+            Log.w(TAG, "POST failed: ${e.message}")
+            false
         }
-        
-        val code = conn.responseCode
-        conn.disconnect()
-        return code in 200..299
     }
-    private fun performSecurityCheck(skipConfirmationDelay: Boolean = false) {
-        if (isStartupGracePeriod) {
-            Log.d(TAG, "Startup grace period — ignoring Wi-Fi callback")
-            return
-        }
-
-        // ← Use connectivity state not BSSID
+    private fun performSecurityCheck(
+        skipConfirmationDelay: Boolean = false
+    ) {
+        if (isStartupGracePeriod) return
+        
         val wifiData = getWifiInfo()
-        val actualRssi = wifiData.rssi
-
         val now = SystemClock.elapsedRealtime()
-
-        if (!wifiData.isConnected || wifiData.rssi <= -127) {
-            // WiFi is OFF or disconnected
+        
+        if (!wifiData.isConnected || 
+            wifiData.rssi <= -127) {
+            
             if (skipConfirmationDelay) {
-                // ← FIXED: Instant breach
-                // from ScreenAndWiFiReceiver
-                // Call triggerBreach() directly
-                // NOT WiFiMonitoringService
-                Log.e(TAG, "⚡ INSTANT breach — DISABLING detected")
+                // ← Instant breach from Receiver
+                Log.e(TAG,
+                    "⚡ INSTANT BREACH — " +
+                    "skipDelay=true")
                 triggerBreach(
                     "WiFi DISABLING instant",
                     rssi = -127,
@@ -297,31 +355,28 @@ class SixSignalMonitor(private val context: Context) {
                 firstWifiLossTime = 0L
                 return
             }
-
-            // Start or check the 8-second delay timer
+            
+            // Normal path with 8s timer
             if (firstWifiLossTime == 0L) {
                 firstWifiLossTime = now
-                Log.w(TAG, "⏱️ Starting 8s Wi-Fi loss confirmation timer...")
-            } else if (now - firstWifiLossTime >= 8_000L) {
-                Log.e(TAG, "8s confirmed — BREACH")
-                // ← FIXED: Call triggerBreach directly
-                // not WiFiMonitoringService
+                Log.w(TAG, "WiFi loss — 8s timer")
+            } else if (now - firstWifiLossTime 
+                >= 8_000L) {
+                Log.e(TAG, "8s confirmed — breach!")
                 triggerBreach(
-                    "WiFi OFF 8s confirmed",
+                    "WiFi OFF confirmed 8s",
                     rssi = -127
                 )
                 firstWifiLossTime = 0L
-            } else {
-                Log.w(TAG, "⏱️ Waiting for 8s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
             }
+            
         } else {
-            // WiFi connected — all good
-            if (firstWifiLossTime != 0L) {
+            firstWifiLossTime = 0L
+            if (Companion.isBreachActive) {
+                Companion.isBreachActive = false
                 Log.d(TAG, "WiFi restored")
             }
-            firstWifiLossTime = 0L
-            Companion.isBreachActive = false
-            Log.d(TAG, "WiFi OK RSSI: ${wifiData.rssi}")
+            Log.d(TAG, "WiFi OK RSSI:${wifiData.rssi}")
         }
     }
 

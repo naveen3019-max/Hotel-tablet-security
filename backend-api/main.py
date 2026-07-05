@@ -85,7 +85,9 @@ async def keepalive_ping():
                 logger.info(f"🏓 Keepalive ping: {r.status_code}")
         except Exception as e:
             logger.warning(f"⚠️ Keepalive ping failed: {e}")
-        await asyncio.sleep(60)  # ← FIXED: every 60s
+        await asyncio.sleep(30)  # ← every 30 seconds
+        # 30s ensures Render NEVER starts sleeping
+        # Even if one ping fails next is 30s away  # ← FIXED: every 60s
         # Render needs ping every 60s to stay awake
         # 2 minute gap allows Render to start sleeping
 
