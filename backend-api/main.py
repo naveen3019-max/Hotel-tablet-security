@@ -936,8 +936,8 @@ async def breach_instant(
         "roomId": roomId,
         "rssi": rssi,
         "message": "WiFi disabled - instant breach"
-    }, hotel_id=device_hotel_id) # ← ADD hotel_id
-    
+    }, hotel_id=device_hotel_id)
+
     print(f"🚨 INSTANT BREACH: {deviceId}", flush=True)
     return {"ok": True}
 
@@ -949,92 +949,74 @@ async def alert_breach(
 ):
     """Record breach alert (JWT protected)"""
     try:
+        # ← Log entry immediately so Render shows receipt even if something later fails
+        logger.info(
+            f"🚨 Breach received: "
+            f"{b.deviceId} rssi={b.rssi}")
+
         # ← Validate RSSI
-        rssi = b.rssi
-        if rssi > -10:
-            rssi = -127
-            logger.warning(
-                f"Invalid RSSI corrected: "
-                f"{b.deviceId}")
+        rssi = b.rssi if b.rssi <= -10 else -127
 
         # ← Safe timestamp handling
         breach_time = get_utc_naive()
         try:
-            if b.breachTimestamp and                b.breachTimestamp > 0:
-                breach_age_s = (
-                    int(time.time() * 1000) -
-                    b.breachTimestamp
+            if b.breachTimestamp and b.breachTimestamp > 0:
+                age_s = (
+                    int(time.time() * 1000) - b.breachTimestamp
                 ) / 1000
-                if 0 < breach_age_s < 600:
-                    breach_time =                         datetime.fromtimestamp(
+                if 0 < age_s < 600:
+                    breach_time = datetime.fromtimestamp(
                         b.breachTimestamp / 1000
                     ).replace(tzinfo=None)
+                    logger.info(f"Using device timestamp: {age_s:.0f}s ago")
         except Exception as ts_err:
-            logger.warning(
-                f"Timestamp parse failed: {ts_err}")
+            logger.warning(f"Timestamp error: {ts_err}")
             breach_time = get_utc_naive()
 
-        # ← Deduplication check
+        # ← Deduplication
         try:
-            recent_cutoff = datetime.now(
-                pytz.utc
-            ).replace(tzinfo=None) - timedelta(
-                seconds=30)
-            existing = await alerts_collection\
-                .find_one({
+            cutoff = datetime.now(pytz.utc).replace(tzinfo=None) - timedelta(seconds=30)
+            existing = await alerts_collection.find_one({
                 "deviceId": b.deviceId,
                 "type": "breach",
-                "ts": {"$gte": recent_cutoff}
+                "ts": {"$gte": cutoff}
             })
             if existing:
-                logger.info(
-                    f"Duplicate breach skipped: "
-                    f"{b.deviceId}")
-                return {
-                    "ok": True, 
-                    "duplicate": True}
+                logger.info(f"Duplicate skipped: {b.deviceId}")
+                return {"ok": True, "duplicate": True}
         except Exception as dedup_err:
-            logger.error(
-                f"Dedup check failed: {dedup_err}")
+            logger.error(f"Dedup error: {dedup_err}")
             # Continue even if dedup fails
 
         # ← Get hotel_id safely
         hotel_id = "default"
         try:
             if device and isinstance(device, dict):
-                hotel_id = device.get(
-                    "hotel_id", "default") or                     "default"
-        except Exception as hotel_err:
-            logger.error(
-                f"hotel_id error: {hotel_err}")
+                hotel_id = device.get("hotel_id", "default") or "default"
+        except Exception as h_err:
+            logger.error(f"hotel_id error: {h_err}")
 
-        # ← Insert alert
+        # ← Store alert (critical — raise on failure)
         try:
-            alert_doc = {
+            result = await alerts_collection.insert_one({
                 "deviceId": b.deviceId,
                 "roomId": b.roomId,
                 "type": "breach",
                 "severity": "critical",
-                "message": "WiFi disabled on device",
+                "message": "WiFi disabled",
                 "rssi": rssi,
                 "ts": breach_time,
                 "acknowledged": False,
                 "hotel_id": hotel_id
-            }
-            result = await alerts_collection\
-                .insert_one(alert_doc)
+            })
             logger.info(
-                f"✅ Breach alert stored: "
-                f"{b.deviceId} "
-                f"id={result.inserted_id}")
-        except Exception as insert_err:
-            logger.error(
-                f"Alert insert failed: {insert_err}")
-            raise HTTPException(
-                500,
-                f"DB insert failed: {insert_err}")
+                f"✅ Alert stored: "
+                f"{b.deviceId} id={result.inserted_id}")
+        except Exception as db_err:
+            logger.error(f"DB insert failed: {db_err}")
+            raise HTTPException(500, f"DB error: {str(db_err)}")
 
-        # ← Update device status
+        # ← Update device status (non-critical)
         try:
             await devices_collection.update_one(
                 {"_id": b.deviceId},
@@ -1044,19 +1026,16 @@ async def alert_breach(
                     "last_seen": get_utc_naive()
                 }}
             )
-        except Exception as update_err:
-            logger.error(
-                f"Device update failed: {update_err}")
-            # Non-critical — continue
+        except Exception as upd_err:
+            logger.error(f"Device update: {upd_err}")
 
-        # ← Broadcast via WebSocket
+        # ← WebSocket broadcast (non-critical)
         try:
-            ts_str = ""
+            ts_str = breach_time.isoformat()
             try:
-                ts_str = to_ist_isoformat(
-                    breach_time) or ""
+                ts_str = to_ist_isoformat(breach_time) or ts_str
             except Exception:
-                ts_str = breach_time.isoformat()
+                pass
 
             await broadcast_event("alert", {
                 "type": "breach",
@@ -1068,39 +1047,29 @@ async def alert_breach(
             }, hotel_id=hotel_id)
 
             logger.info(
-                f"🚨 BREACH broadcast: "
+                f"📡 Broadcast sent: "
                 f"{b.deviceId} hotel={hotel_id}")
         except Exception as ws_err:
-            logger.error(
-                f"WebSocket broadcast failed: "
-                f"{ws_err}")
-            # Non-critical — alert already saved
+            logger.error(f"WebSocket error: {ws_err}")
 
-        # ← Push notification (non-critical)
+        # ← Email/Slack notification (non-critical — NEVER crash endpoint)
+        # NotificationService has NO Celery dependency after our fix
         try:
-            from notifications import NotificationService
             await NotificationService.send_breach_alert(
-                device_id=b.deviceId,
-                room_id=b.roomId,
-                rssi=rssi
+                b.deviceId, b.roomId, rssi
             )
-        except Exception as push_err:
-            logger.warning(
-                f"Push notification failed "
-                f"(non-critical): {push_err}")
+        except Exception as notif_err:
+            logger.warning(f"Notification failed (ok): {notif_err}")
 
         return {"ok": True}
 
     except HTTPException:
         raise
     except Exception as e:
-        # ← Log the EXACT error so we can see it
         logger.error(
             f"❌ BREACH ENDPOINT CRASH: {e}",
             exc_info=True)
-        raise HTTPException(
-            500,
-            f"Breach endpoint error: {str(e)}")
+        raise HTTPException(500, f"Breach error: {str(e)}")
 
 # Tamper alert with JWT
 @app.post("/api/alert/tamper")
