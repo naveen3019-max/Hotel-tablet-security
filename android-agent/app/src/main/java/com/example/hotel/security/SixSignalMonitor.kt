@@ -137,13 +137,12 @@ class SixSignalMonitor(private val context: Context) {
         Thread {
             // ← Acquire WakeLock to prevent
             // Android from killing this thread
-            import android.os.PowerManager
             val pm = context.getSystemService(
                 Context.POWER_SERVICE
-            ) as PowerManager
+            ) as android.os.PowerManager
             
             val wakeLock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,
                 "HotelSecurity::BreachPost"
             )
             
