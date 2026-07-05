@@ -47,6 +47,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action ?: return
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wl = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -54,42 +55,46 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         )
         wl.acquire(3000)
         try {
-            when (intent.action) {
+            when (action) {
                 WifiManager.WIFI_STATE_CHANGED_ACTION -> {
                     val wifiState = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN)
-                    
                     when (wifiState) {
                         WifiManager.WIFI_STATE_DISABLING -> {
                             Log.e(TAG, "🚨 WiFi DISABLING!")
-                            
-                            SixSignalMonitor.lastBreachSentTime = SystemClock.elapsedRealtime()
-                            SixSignalMonitor.isBreachActive = true
-                            
                             val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
-                                action = "WIFI_OFF_BREACH"
+                                this.action = "WIFI_OFF_BREACH"
                                 putExtra("IMMEDIATE_BREACH", true)
                                 putExtra("FORCED_RSSI", -127)
                             }
-                            if (Build.VERSION.SDK_INT >= 26){
+                            if (Build.VERSION.SDK_INT >= 26) {
                                 context.startForegroundService(serviceIntent)
                             } else {
                                 context.startService(serviceIntent)
                             }
                         }
-                        
                         WifiManager.WIFI_STATE_DISABLED -> {
                             Log.d(TAG, "WiFi DISABLED")
+                            val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
+                                this.action = "WIFI_OFF_BREACH"
+                                putExtra("IMMEDIATE_BREACH", false)
+                                putExtra("FORCED_RSSI", -127)
+                            }
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                context.startForegroundService(serviceIntent)
+                            } else {
+                                context.startService(serviceIntent)
+                            }
                         }
-                        
                         WifiManager.WIFI_STATE_ENABLED -> {
-                            Log.d(TAG, "✅ WiFi ENABLED")
-                            
-                            SixSignalMonitor.isBreachActive = false
-                            SixSignalMonitor.lastBreachSentTime = 0L
-                            
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                SixSignalMonitor.getInstance()?.sendPendingBreachIfExists()
-                            }, 3000L)
+                            Log.d(TAG, "✅ WiFi ENABLED — sending WIFI_RESTORED, not breach")
+                            val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
+                                this.action = "WIFI_RESTORED"
+                            }
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                context.startForegroundService(serviceIntent)
+                            } else {
+                                context.startService(serviceIntent)
+                            }
                             
                             Handler(Looper.getMainLooper()).postDelayed({
                                 Thread {
@@ -97,17 +102,33 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                                 }.start()
                             }, 5000L)
                         }
-                        
-                        WifiManager.WIFI_STATE_ENABLING -> {
-                            Log.d(TAG, "WiFi enabling...")
+                    }
+                }
+                ConnectivityManager.CONNECTIVITY_ACTION -> {
+                    val noConnectivity = intent.getBooleanExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, false)
+                    if (noConnectivity) {
+                        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                        val wifiState = wifiManager.wifiState
+                        if (wifiState == WifiManager.WIFI_STATE_DISABLED || wifiState == WifiManager.WIFI_STATE_DISABLING) {
+                            Log.e(TAG, "CONNECTIVITY_ACTION: WiFi is OFF, sending breach")
+                            val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
+                                this.action = "WIFI_OFF_BREACH"
+                                putExtra("IMMEDIATE_BREACH", false)
+                                putExtra("FORCED_RSSI", -127)
+                            }
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                context.startForegroundService(serviceIntent)
+                            } else {
+                                context.startService(serviceIntent)
+                            }
+                        } else {
+                            Log.d(TAG, "CONNECTIVITY_ACTION no-connectivity but WiFi state=$wifiState — ignoring restore blip")
                         }
                     }
                 }
-                
                 Intent.ACTION_SCREEN_OFF -> {
                     Log.d(TAG, "Screen OFF")
                 }
-                
                 Intent.ACTION_SCREEN_ON -> {
                     Log.d(TAG, "Screen ON")
                 }

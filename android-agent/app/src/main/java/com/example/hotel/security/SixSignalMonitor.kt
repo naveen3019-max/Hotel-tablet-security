@@ -20,6 +20,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class SixSignalMonitor(private val context: Context) {
+    
+    fun resetWifiLostState() {
+        firstWifiLossTime = 0L
+        isBreachActive = false
+        lastBreachSentTime = 0L
+        Log.d(TAG, "WiFi lost state reset — breach detection reset for next disconnect")
+    }
     private var isRunning = false
     private var lastCheckTime = 0L
     // Duplicate removed
@@ -130,136 +137,91 @@ class SixSignalMonitor(private val context: Context) {
 
     fun fireBreach(rssi: Int = -127) {
         val actualRssi = rssi // trust caller
-        val breachTime = System.currentTimeMillis()
+        Log.d(TAG, "fireBreach() called with rssi=$rssi")
         
-        // ← Use Thread not coroutine
-        // Thread survives Doze with WakeLock
+        val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val deviceIdVal = prefs.getString("device_id", null) ?: run {
+            Log.e(TAG, "fireBreach: deviceId is null — aborting")
+            return
+        }
+        val roomIdVal = prefs.getString("room_id", null) ?: run {
+            Log.e(TAG, "fireBreach: roomId is null — aborting")
+            return
+        }
+        
+        val freshToken = context.getSharedPreferences("kiosk_prefs", Context.MODE_PRIVATE)
+            .getString("authToken", null)
+
+        if (freshToken == null) {
+            Log.e(TAG, "fireBreach: authToken is null — check SharedPreferences key name")
+            // Try alternate key names
+            val altToken = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+                .getString("device_token", null)
+                ?: context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+                .getString("authToken", null)
+                
+            if (altToken == null) {
+                Log.e(TAG, "fireBreach: no token in any pref — cannot POST breach")
+                return
+            }
+            Log.d(TAG, "fireBreach: found token in alternate prefs")
+            executeBreachPost(deviceIdVal, roomIdVal, altToken, rssi)
+        } else {
+            executeBreachPost(deviceIdVal, roomIdVal, freshToken, rssi)
+        }
+    }
+
+    private fun executeBreachPost(deviceId: String, roomId: String, token: String, rssi: Int) {
         Thread {
-            // ← Acquire WakeLock to prevent
-            // Android from killing this thread
-            val pm = context.getSystemService(
-                Context.POWER_SERVICE
-            ) as android.os.PowerManager
             
+            val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
             val wakeLock = pm.newWakeLock(
                 android.os.PowerManager.PARTIAL_WAKE_LOCK,
                 "HotelSecurity::BreachPost"
             )
-            
-            // ← Acquire for max 60 seconds
-            // Enough for all retry attempts
             wakeLock.acquire(60_000L)
             
             try {
-                var success = false
-                
-                // First 3 attempts: 1s apart
-                for (attempt in 0..2) {
-                    if (success) break
+                var posted = false
+                repeat(5) { attempt ->
+                    if (posted) return@repeat
+                    Log.d(TAG, "Breach POST attempt ${attempt + 1}/5")
                     try {
-                        success = postBreachWithTimestamp(
-                            actualRssi, breachTime)
-                        if (success) {
-                            Log.i(TAG,
-                                "✅ Breach sent " +
-                                "attempt ${attempt+1}")
-                            clearPendingBreach()
-                            break
+                        val backendUrl = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+                            .getString("backend_base_url", "https://hotel-tablet-security.onrender.com")
+                        val conn = (URL("$backendUrl/api/alert/breach")
+                            .openConnection() as HttpURLConnection).apply {
+                            requestMethod = "POST"
+                            setRequestProperty("Content-Type", "application/json")
+                            setRequestProperty("Authorization", "Bearer $token")
+                            connectTimeout = 12_000   // ← increase from 8s to 12s for Render cold start
+                            readTimeout = 12_000
+                            doOutput = true
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG,
-                            "Attempt ${attempt+1}: " +
-                            "${e.message}")
-                    }
-                    if (!success) Thread.sleep(1000L)
-                }
-                
-                if (success) return@Thread
-                
-                // Next 12 attempts: 2s apart
-                for (attempt in 0..11) {
-                    if (success) break
-                    try {
-                        success = postBreachWithTimestamp(
-                            actualRssi, breachTime)
-                        if (success) {
-                            Log.i(TAG,
-                                "✅ Breach sent " +
-                                "attempt ${attempt+4}")
-                            clearPendingBreach()
-                            break
+                        val body = JSONObject().apply {
+                            put("deviceId", deviceId)
+                            put("roomId", roomId)
+                            put("rssi", rssi)
                         }
+                        OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+                        val code = conn.responseCode
+                        Log.d(TAG, "Breach POST attempt ${attempt + 1} → HTTP $code")
+                        when {
+                            code in 200..299 -> { posted = true; Log.d(TAG, "✅ Breach POST succeeded") }
+                            code == 401 -> { Log.e(TAG, "❌ 401 — token rejected, stopping retries"); return@Thread }
+                            else -> Log.w(TAG, "⚠️ HTTP $code — will retry")
+                        }
+                        conn.disconnect()
                     } catch (e: Exception) {
-                        Log.w(TAG,
-                            "Attempt ${attempt+4}: " +
-                            "${e.message}")
+                        Log.e(TAG, "Breach POST attempt ${attempt + 1} exception: ${e.javaClass.simpleName}: ${e.message}")
                     }
-                    if (!success) Thread.sleep(2000L)
+                    if (!posted) Thread.sleep(3_000L)
                 }
-                
-                if (!success) {
-                    Log.w(TAG,
-                        "⚠️ All 15 failed. " +
-                        "Storing breach locally.")
-                    context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
-                        .putBoolean("pending_breach", true)
-                        .putInt("pending_breach_rssi", actualRssi)
-                        .putLong("breach_detected_at", breachTime)
-                        .apply()
-                    pendingBreachRssi = actualRssi
-                }
-                
+                if (!posted) Log.e(TAG, "❌ All 5 breach POST attempts failed")
             } finally {
-                // ← ALWAYS release WakeLock
-                if (wakeLock.isHeld) {
-                    wakeLock.release()
-                }
+                if (wakeLock.isHeld) wakeLock.release()
             }
-            
-        }.apply { 
-            isDaemon = false // ← Keep thread alive
-            start() 
-        }
-    }
-
-    // ← FIXED: Called when WiFi turns back ON
-    fun sendPendingBreachIfExists() {
-        val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
-        val hasPending = prefs.getBoolean("pending_breach", false)
-        
-        if (!hasPending) return
-        
-        val pendingRssi = prefs.getInt("pending_breach_rssi", -127)
-        val breachTime = prefs.getLong("breach_detected_at", 0L)
-        
-        // ← Check breach is not too old (>10 min)
-        val ageMs = System.currentTimeMillis() - breachTime
-        if (ageMs > 10 * 60 * 1000L) {
-            // Too old — discard
-            clearPendingBreach()
-            Log.w(TAG, "Pending breach too old — discarded")
-            return
-        }
-        
-        Log.i(TAG, "📤 Sending pending breach from ${ageMs / 1000}s ago RSSI:$pendingRssi")
-        
-        CoroutineScope(Dispatchers.IO).launch {
-            val breachTimestamp = breachTime
-            
-            repeat(5) { attempt ->
-                try {
-                    val success = postBreachWithTimestamp(pendingRssi, breachTimestamp)
-                    if (success) {
-                        clearPendingBreach()
-                        Log.i(TAG, "✅ Pending breach sent!")
-                        return@launch
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Pending breach attempt ${attempt + 1} failed")
-                    kotlinx.coroutines.delay(2000L)
-                }
-            }
-        }
+        }.apply { isDaemon = true; start() }
     }
 
     private fun clearPendingBreach() {
