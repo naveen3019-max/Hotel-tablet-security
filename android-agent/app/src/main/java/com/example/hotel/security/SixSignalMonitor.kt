@@ -22,7 +22,7 @@ import java.net.URL
 class SixSignalMonitor(private val context: Context) {
     private var isRunning = false
     private var lastCheckTime = 0L
-    private var lastBreachSentTime = 0L // Cooldown tracker to prevent backend spam
+    // Duplicate removed
     private var firstWifiLossTime = 0L // Tracks when Wi-Fi loss was first detected
     private var isStartupGracePeriod = true
 
@@ -89,9 +89,10 @@ class SixSignalMonitor(private val context: Context) {
     fun triggerBreach(reason: String, rssi: Int, isImmediate: Boolean = false) {
         val now = SystemClock.elapsedRealtime()
 
-        // ← FIXED: Check cooldown to prevent spamming backend
-        if (now - lastBreachSentTime < BREACH_COOLDOWN) {
-            Log.w(TAG, "Breach cooldown active. Skipping POST for: $reason")
+        // ← FIXED: Use companion object variable
+        // not instance variable (was duplicate bug)
+        if (now - Companion.lastBreachSentTime < BREACH_COOLDOWN) {
+            Log.w(TAG, "Breach cooldown — skip")
             return
         }
 
@@ -113,21 +114,26 @@ class SixSignalMonitor(private val context: Context) {
             return
         }
 
-        lastBreachSentTime = now
-        Log.e(TAG, "🚨 SENDING BREACH TO BACKEND: $reason | Device: $deviceId | Room: $roomId | RSSI: $rssi")
+        // ← FIXED: Update companion variable
+        Companion.lastBreachSentTime = now
+        Companion.isBreachActive = true
 
-        fireBreach(rssi)
+        Log.e(TAG, "🚨 BREACH: $reason | Device:$deviceId RSSI:$rssi")
+
+        // ← FIXED: Call fireBreach directly
+        // Do NOT go through WiFiMonitoringService
+        // which may have additional delays
+        fireBreach(rssi = rssi)
     }
 
     private val breachLock = Mutex()
 
     fun fireBreach(rssi: Int = -127) {
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val actualRssi = if (!wifiManager.isWifiEnabled) {
-            -127
-        } else {
-            rssi
-        }
+        // ← FIXED: Do NOT override rssi
+        // The caller already set correct rssi
+        // Old code was reading WifiManager
+        // which returns cached value not -127
+        val actualRssi = rssi  // trust the caller
         
         CoroutineScope(Dispatchers.IO).launch {
             breachLock.withLock {
@@ -278,8 +284,17 @@ class SixSignalMonitor(private val context: Context) {
         if (!wifiData.isConnected || wifiData.rssi <= -127) {
             // WiFi is OFF or disconnected
             if (skipConfirmationDelay) {
-                Log.d(TAG, "⚡ IMMEDIATE breach — DISABLING state, skipping 8s delay")
-                triggerBreach("⚡ IMMEDIATE breach — DISABLING state", actualRssi, isImmediate = true)
+                // ← FIXED: Instant breach
+                // from ScreenAndWiFiReceiver
+                // Call triggerBreach() directly
+                // NOT WiFiMonitoringService
+                Log.e(TAG, "⚡ INSTANT breach — DISABLING detected")
+                triggerBreach(
+                    "WiFi DISABLING instant",
+                    rssi = -127,
+                    isImmediate = true
+                )
+                firstWifiLossTime = 0L
                 return
             }
 
@@ -288,15 +303,24 @@ class SixSignalMonitor(private val context: Context) {
                 firstWifiLossTime = now
                 Log.w(TAG, "⏱️ Starting 8s Wi-Fi loss confirmation timer...")
             } else if (now - firstWifiLossTime >= 8_000L) {
-                Log.e(TAG, "🚨 8s confirmed! BREACH")
-                WiFiMonitoringService.triggerBreachAlert("WiFi OFF or disconnected", actualRssi)
+                Log.e(TAG, "8s confirmed — BREACH")
+                // ← FIXED: Call triggerBreach directly
+                // not WiFiMonitoringService
+                triggerBreach(
+                    "WiFi OFF 8s confirmed",
+                    rssi = -127
+                )
+                firstWifiLossTime = 0L
             } else {
                 Log.w(TAG, "⏱️ Waiting for 8s confirmation... (${(now - firstWifiLossTime) / 1000}s elapsed)")
             }
         } else {
             // WiFi connected — all good
+            if (firstWifiLossTime != 0L) {
+                Log.d(TAG, "WiFi restored")
+            }
             firstWifiLossTime = 0L
-            WiFiMonitoringService.lastBreachTime = 0L
+            Companion.isBreachActive = false
             Log.d(TAG, "WiFi OK RSSI: ${wifiData.rssi}")
         }
     }
@@ -335,7 +359,7 @@ class SixSignalMonitor(private val context: Context) {
     )
 
     fun resetBreachState() {
-        lastBreachSentTime = 0L
+        Companion.lastBreachSentTime = 0L
         firstWifiLossTime = 0L
     }
 }

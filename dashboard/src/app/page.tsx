@@ -544,7 +544,6 @@ export default function Dashboard() {
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
   const [sessionCount, setSessionCount] = useState<number>(0);
-  const [lastAlertTime, setLastAlertTime] = useState<string>("");
   const shownAlertIds = useRef<Set<string>>(new Set());
 
   const toastIdCounter = useRef(0);
@@ -621,7 +620,6 @@ export default function Dashboard() {
         };
         
         setAlerts((prev) => [newAlert, ...prev].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100));
-        setLastAlertTime(alertTime);
         
         if (breachDeviceId) {
           addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
@@ -645,7 +643,6 @@ export default function Dashboard() {
       if (lastMessage?.type === "device_recovered" && d?.deviceId) {
         // ← Update device to OK, do NOT add to alerts list
         setDevices((prev) => prev.map((dev) => dev.deviceId === d.deviceId ? { ...dev, status: "ok", rssi: (d.rssi as number) ?? dev.rssi } : dev));
-      } : dev));
       }
 
       if (type === "device_offline" || type === "device_deleted") {

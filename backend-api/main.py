@@ -85,7 +85,9 @@ async def keepalive_ping():
                 logger.info(f"🏓 Keepalive ping: {r.status_code}")
         except Exception as e:
             logger.warning(f"⚠️ Keepalive ping failed: {e}")
-        await asyncio.sleep(2 * 60)  # every 2 minutes
+        await asyncio.sleep(60)  # ← FIXED: every 60s
+        # Render needs ping every 60s to stay awake
+        # 2 minute gap allows Render to start sleeping
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
