@@ -392,9 +392,13 @@ class CreateHotelRequest(BaseModel):
     password: str
     subscription_plan: str = "premium"
     max_devices: int = 100
-    max_dashboard_logins: int = 2 # ← NEW: default 2
-    max_dashboard_logins: int = 2 # ← NEW: default 2
+    max_dashboard_logins: int = 2
     contact_email: Optional[str] = None
+
+class UpdateHotelLimitsRequest(BaseModel):
+    """Super admin can update per-hotel resource limits."""
+    max_devices: Optional[int] = None           # tablet registration limit
+    max_dashboard_logins: Optional[int] = None  # concurrent dashboard sessions
 
 class AlertAcknowledge(BaseModel):
     alertId: str
@@ -674,11 +678,10 @@ async def list_hotels(user=Depends(require_role("super_admin"))):
             "username": h.get("username"),
             "subscription_active": h.get("subscription_active", True),
             "device_count": device_count,
+            "max_devices": h.get("max_devices", 100),
             "active_breaches": active_breaches,
             "max_dashboard_logins": h.get("max_dashboard_logins", 2),
             "active_sessions": await sessions_collection.count_documents({"hotel_id": h["_id"], "expires_at": {"$gt": get_utc_naive()}}),
-            "max_dashboard_logins": h.get("max_dashboard_logins", 2),
-            "active_sessions": await sessions_collection.count_documents({"hotel_id": h["_id"], "expires_at": {"$gt": get_utc_naive()}})
         })
     return result
 
@@ -694,6 +697,49 @@ async def toggle_hotel_status(hotel_id: str, user=Depends(require_role("super_ad
         {"$set": {"subscription_active": new_status}}
     )
     return {"ok": True, "subscription_active": new_status}
+
+@app.patch("/api/admin/hotels/{hotel_id}/limits")
+async def update_hotel_limits(
+    hotel_id: str,
+    req: UpdateHotelLimitsRequest,
+    user=Depends(require_role("super_admin"))
+):
+    """Super admin sets the tablet and/or dashboard-login limit for a hotel."""
+    hotel = await hotels_collection.find_one({"_id": hotel_id})
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    
+    updates: dict = {}
+    if req.max_devices is not None:
+        if req.max_devices < 1:
+            raise HTTPException(status_code=400, detail="max_devices must be at least 1")
+        updates["max_devices"] = req.max_devices
+    if req.max_dashboard_logins is not None:
+        if req.max_dashboard_logins < 1:
+            raise HTTPException(status_code=400, detail="max_dashboard_logins must be at least 1")
+        updates["max_dashboard_logins"] = req.max_dashboard_logins
+    
+    if not updates:
+        raise HTTPException(status_code=400, detail="No limits provided to update")
+    
+    await hotels_collection.update_one({"_id": hotel_id}, {"$set": updates})
+    
+    # Return full updated state
+    updated_hotel = await hotels_collection.find_one({"_id": hotel_id})
+    device_count = await devices_collection.count_documents({"hotel_id": hotel_id})
+    
+    print(
+        f"✏️ Limits updated for hotel {hotel_id}: {updates}",
+        flush=True
+    )
+    
+    return {
+        "ok": True,
+        "hotel_id": hotel_id,
+        "max_devices": updated_hotel.get("max_devices", 100),
+        "max_dashboard_logins": updated_hotel.get("max_dashboard_logins", 2),
+        "device_count": device_count,
+    }
 
 @app.delete("/api/admin/hotels/{hotel_id}")
 async def delete_hotel(hotel_id: str):
@@ -849,6 +895,28 @@ async def register_device(payload: DeviceRegister):
         hotel = await hotels_collection.find_one({"username": payload.staffUsername})
         if hotel:
             hotel_id = hotel["_id"]
+
+    # ← Enforce tablet limit (skip for super-admin / default)
+    if hotel_id and hotel_id not in ("default", "ALL"):
+        hotel_doc = await hotels_collection.find_one({"_id": hotel_id})
+        if hotel_doc:
+            max_devices = hotel_doc.get("max_devices", 100)
+            # Count EXISTING devices for this hotel,
+            # excluding the device being re-registered
+            current_count = await devices_collection.count_documents({
+                "hotel_id": hotel_id,
+                "_id": {"$ne": payload.deviceId}   # allow re-registration
+            })
+            if current_count >= max_devices:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Tablet limit reached! "
+                        f"This hotel is allowed {max_devices} tablet(s). "
+                        f"Currently registered: {current_count}. "
+                        f"Contact Hotel Security to increase your limit."
+                    )
+                )
 
     # Use print for immediate visibility in Render logs
     print("="*60, flush=True)
