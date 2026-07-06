@@ -56,6 +56,39 @@ class SixSignalMonitor(private val context: Context) {
         fun setInstance(monitor: SixSignalMonitor) { instance = monitor }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Network-bound connection helper
+    // When WiFi is OFF the system still has mobile/ethernet networks available.
+    // Binding the socket to one of those bypasses the dead WiFi interface and
+    // gives Android a working DNS resolver, fixing UnknownHostException.
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun openConnectionOnAnyNetwork(
+        urlString: String
+    ): HttpURLConnection {
+        val url = URL(urlString)
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as ConnectivityManager
+
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            // Skip the dead WiFi interface
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            // Only use networks that actually claim Internet access
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            try {
+                val conn = network.openConnection(url) as HttpURLConnection
+                Log.i(TAG, "✅ Using non-WiFi network for breach POST")
+                return conn
+            } catch (e: Exception) {
+                Log.w(TAG, "Network $network failed: ${e.message}")
+            }
+        }
+
+        // Fallback: default connection (may still work if DNS is cached)
+        Log.w(TAG, "No mobile network found, trying default connection")
+        return url.openConnection() as HttpURLConnection
+    }
+
     fun startMonitoring() {
         if (!isRunning) {
             isRunning = true
@@ -189,12 +222,14 @@ class SixSignalMonitor(private val context: Context) {
                     try {
                         val backendUrl = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
                             .getString("backend_base_url", "https://hotel-tablet-security.onrender.com")
-                        val conn = (URL("$backendUrl/api/alert/breach")
-                            .openConnection() as HttpURLConnection).apply {
+                        // ← FIXED: bind to mobile/ethernet to bypass dead WiFi interface
+                        val conn = openConnectionOnAnyNetwork(
+                            "$backendUrl/api/alert/breach"
+                        ).apply {
                             requestMethod = "POST"
                             setRequestProperty("Content-Type", "application/json")
                             setRequestProperty("Authorization", "Bearer $token")
-                            connectTimeout = 12_000   // ← increase from 8s to 12s for Render cold start
+                            connectTimeout = 12_000   // 12s for Render cold start
                             readTimeout = 12_000
                             doOutput = true
                         }
@@ -254,10 +289,10 @@ class SixSignalMonitor(private val context: Context) {
             deviceId.isEmpty()) return false
         
         return try {
-            val url = URL(
-                "$backendUrl/api/alert/breach")
-            val conn = url.openConnection()
-                as HttpURLConnection
+            // ← FIXED: bind to mobile/ethernet to bypass dead WiFi interface
+            val conn = openConnectionOnAnyNetwork(
+                "$backendUrl/api/alert/breach"
+            )
             conn.requestMethod = "POST"
             conn.setRequestProperty(
                 "Content-Type", "application/json")

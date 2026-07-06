@@ -75,9 +75,26 @@ class KioskService : Service() {
         try {
             val backendUrl = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
                 .getString("backend_base_url", "https://hotel-tablet-security.onrender.com") ?: return
-            
+
             val url = URL("$backendUrl/health")
-            val conn = url.openConnection() as HttpURLConnection
+
+            // ← FIXED: prefer any non-WiFi network so the ping survives WiFi-OFF
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE)
+                as android.net.ConnectivityManager
+
+            val conn = try {
+                val mobileNet = cm.allNetworks.firstOrNull { net ->
+                    val caps = cm.getNetworkCapabilities(net)
+                    caps != null &&
+                    !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                }
+                mobileNet?.openConnection(url) as? HttpURLConnection
+                    ?: url.openConnection() as HttpURLConnection
+            } catch (e: Exception) {
+                url.openConnection() as HttpURLConnection
+            }
+
             conn.requestMethod = "GET"
             conn.connectTimeout = 5000
             conn.readTimeout = 5000
