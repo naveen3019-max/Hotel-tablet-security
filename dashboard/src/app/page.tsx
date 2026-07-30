@@ -72,6 +72,15 @@ const isDeviceOffline = (d: Device): boolean => {
   return false;
 };
 
+const isDeviceBreached = (d: Device): boolean => {
+  if (d.status !== "breach") return false;
+  if (d.lastSeen) {
+    const diffHours = (Date.now() - new Date(d.lastSeen).getTime()) / (1000 * 60 * 60);
+    if (diffHours > 2) return false;
+  }
+  return true;
+};
+
 const getBatteryColor = (b?: number) => {
   if (b === undefined) return "#475569";
   if (b > 50) return "#22c55e";
@@ -287,7 +296,7 @@ function DeviceCard({
   onDelete: (id: string) => void;
 }) {
   const isOffline = isDeviceOffline(d);
-  const isBreach  = d.status === "breach";
+  const isBreach  = isDeviceBreached(d);
   const isOk      = !isBreach && !isOffline;
 
   const borderColor  = isBreach ? "#ef4444" : isOffline ? "#1e2a45" : "#22c55e";
@@ -319,7 +328,7 @@ function DeviceCard({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            {d.status === "breach" ? (
+            {isDeviceBreached(d) ? (
               <>
                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444", boxShadow: "0 0 8px #ef4444" }} className="animate-pulse" />
                 <span style={{ fontSize: 10, fontWeight: 700, color: "#f87171", letterSpacing: 0.5 }}>BREACH</span>
@@ -773,16 +782,16 @@ export default function Dashboard() {
 
   // ── Derived stats ──
   const okCount      = devices.filter((d) => d.status === "ok" && !isDeviceOffline(d)).length;
-  const breachCount  = devices.filter((d) => d.status === "breach").length;
-  const offlineCount = devices.filter((d) => isDeviceOffline(d) && d.status !== "breach").length;
+  const breachCount  = devices.filter((d) => isDeviceBreached(d)).length;
+  const offlineCount = devices.filter((d) => isDeviceOffline(d) && !isDeviceBreached(d)).length;
   const unackCount   = alerts.filter((a) => !a.acknowledged).length;
 
   const filteredDevices = devices.filter((d) => {
     if (!d?.deviceId) return false;
     const offline = isDeviceOffline(d);
     if (filter === "ok"      && (d.status !== "ok" || offline)) return false;
-    if (filter === "breach"  && (d.status !== "breach")) return false;
-    if (filter === "offline" && (!offline || d.status === "breach")) return false;
+    if (filter === "breach"  && !isDeviceBreached(d)) return false;
+    if (filter === "offline" && (!offline || isDeviceBreached(d))) return false;
     if (filter === "low_battery" && (d.battery === undefined || d.battery > 20)) return false;
     if (searchQuery && !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) && !(d.roomId && d.roomId.toString().toLowerCase().includes(searchQuery.toLowerCase()))) return false;
     return true;
