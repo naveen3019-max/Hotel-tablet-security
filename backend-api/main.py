@@ -1695,6 +1695,14 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
         except:
             pass
             
+    # Emergency fallback: type mismatch or whitespace issues
+    if not device:
+        all_devices = await devices_collection.find({}).to_list(1000)
+        for d in all_devices:
+            if str(d.get("_id")).strip() == device_id.strip() or str(d.get("device_id", "")).strip() == device_id.strip():
+                device = d
+                break
+                
     if not device:
         raise HTTPException(404, f"Device {device_id} not found in DB! (Role: {role}, Hotel: '{hotelId}')")
 
