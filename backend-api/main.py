@@ -932,7 +932,8 @@ async def register_device(payload: DeviceRegister):
         "room_id": payload.roomId,
         "hotel_id": hotel_id,
         "status": StatusEnum.ok,
-        "last_seen": get_utc_naive()
+        "last_seen": get_utc_naive(),
+        "createdAt": get_utc_naive()
     }
     
     if payload.staffUsername:
@@ -960,12 +961,18 @@ async def register_device(payload: DeviceRegister):
     
     # Broadcast new device
     try:
-        await broadcast_event("device_added", {
+        await broadcast_event("device_registered", {
             "deviceId": payload.deviceId,
             "roomId": payload.roomId,
-            "status": "ok",
-            "lastSeen": to_ist_isoformat(device_data["last_seen"]),
-            "hotelId": hotel_id
+            "hotelId": hotel_id,
+            "status": "offline",
+            "battery": None,
+            "rssi": None,
+            "ip": None,
+            "lastSeen": None,
+            "registeredBy": payload.staffUsername,
+            "isNew": True,
+            "createdAt": get_utc_naive().isoformat()
         }, hotel_id=hotel_id)
     except Exception as e:
         logger.error(f"Failed to broadcast device_added: {e}")
@@ -1633,8 +1640,8 @@ async def list_devices(authorization: str = Header(None)):
     # Optimized with projection - include both camelCase and snake_case fields
     cursor = devices_collection.find(
         query,
-        projection={"room_id": 1, "roomId": 1, "hotel_id": 1, "status": 1, "battery": 1, "rssi": 1, "ip": 1, "last_seen": 1, "staff_name": 1, "registered_by": 1}
-    )
+        projection={"room_id": 1, "roomId": 1, "hotel_id": 1, "status": 1, "battery": 1, "rssi": 1, "ip": 1, "last_seen": 1, "staff_name": 1, "registered_by": 1, "createdAt": 1}
+    ).sort("createdAt", -1)
     devices = await cursor.to_list(length=1000)
     
     # List comprehension for better performance
@@ -1752,7 +1759,8 @@ async def quick_add_device(
         "status": StatusEnum.ok,
         "last_seen": get_utc_naive(),
         "battery": None,
-        "rssi": None
+        "rssi": None,
+        "createdAt": get_utc_naive()
     }
     
     await devices_collection.insert_one(device_data)

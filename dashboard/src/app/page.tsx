@@ -650,10 +650,20 @@ export default function Dashboard() {
         }
       }
 
-      if ((lastMessage?.type === "device_update" || lastMessage?.type === "device_added") && d?.deviceId) {
+      if (lastMessage?.type === "device_registered" && d?.deviceId) {
         setDevices((prev) => {
           const exists = prev.some((dev) => dev.deviceId === d.deviceId);
-          if (!exists) return [...prev, { deviceId: d.deviceId as string, status: (d.status as string) || "ok", battery: d.battery as number, rssi: d.rssi as number, lastSeen: d.lastSeen as string }];
+          if (exists) {
+            return prev.map((dev) => dev.deviceId === d.deviceId ? { ...dev, status: (d.status as string) || "offline", battery: d.battery as number, rssi: d.rssi as number, lastSeen: d.lastSeen as string, roomId: d.roomId as string } : dev);
+          }
+          return [{ deviceId: d.deviceId as string, status: (d.status as string) || "offline", battery: d.battery as number, rssi: d.rssi as number, lastSeen: d.lastSeen as string, roomId: d.roomId as string }, ...prev];
+        });
+      }
+
+      if (lastMessage?.type === "device_update" && d?.deviceId) {
+        setDevices((prev) => {
+          const exists = prev.some((dev) => dev.deviceId === d.deviceId);
+          if (!exists) return [{ deviceId: d.deviceId as string, status: (d.status as string) || "ok", battery: d.battery as number, rssi: d.rssi as number, lastSeen: d.lastSeen as string }, ...prev];
           return prev.map((dev) => dev.deviceId === d.deviceId ? { ...dev, status: (d.status as string) ?? dev.status, rssi: (d.rssi as number) ?? dev.rssi, battery: (d.battery as number) ?? dev.battery, lastSeen: (d.lastSeen as string) ?? dev.lastSeen } : dev);
         });
       }
