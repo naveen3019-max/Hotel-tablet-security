@@ -1681,10 +1681,22 @@ async def list_devices(authorization: str = Header(None)):
 @app.delete("/api/devices/{device_id}")
 async def delete_device(device_id: str):
     """Delete a device - Owner dashboard feature"""
-    # Delete device
+    # Try deleting by string _id
     result = await devices_collection.delete_one({"_id": device_id})
+    
+    # If not found, try deleting by ObjectId (if manually inserted)
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Device not found")
+        try:
+            result = await devices_collection.delete_one({"_id": ObjectId(device_id)})
+        except:
+            pass
+            
+    # If STILL not found, try deleting by device_id field
+    if result.deleted_count == 0:
+        result = await devices_collection.delete_one({"device_id": device_id})
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail=f"Device {device_id} not found in DB")
     
     # Delete associated alerts asynchronously
     # Note: Using $or to handle both snake_case and camelCase field names
