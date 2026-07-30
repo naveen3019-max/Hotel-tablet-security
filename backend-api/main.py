@@ -725,7 +725,7 @@ async def update_hotel_limits(
     await hotels_collection.update_one({"_id": hotel_id}, {"$set": updates})
     
     # Return full updated state
-    updated_hotel = await hotels_collection.find_one({"_id": hotel_id})
+    updated_hotel = await hotels_collection.find_one({"_id": hotel_id}) or {}
     device_count = await devices_collection.count_documents({"hotel_id": hotel_id})
     
     print(
@@ -957,6 +957,18 @@ async def register_device(payload: DeviceRegister):
         room_id=payload.roomId,
         hotel_id=hotel_id
     )
+    
+    # Broadcast new device
+    try:
+        await broadcast_event("device_added", {
+            "deviceId": payload.deviceId,
+            "roomId": payload.roomId,
+            "status": "ok",
+            "lastSeen": to_ist_isoformat(device_data["last_seen"]),
+            "hotelId": hotel_id
+        }, hotel_id=hotel_id)
+    except Exception as e:
+        logger.error(f"Failed to broadcast device_added: {e}")
     
     return {"ok": True, "token": token}
 

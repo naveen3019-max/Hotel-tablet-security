@@ -287,10 +287,10 @@ function DeviceCard({
   onDelete: (id: string) => void;
 }) {
   const isOffline = isDeviceOffline(d);
-  const isBreach  = d.status === "breach" && !isOffline;
+  const isBreach  = d.status === "breach";
   const isOk      = !isBreach && !isOffline;
 
-  const borderColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
+  const borderColor  = isBreach ? "#ef4444" : isOffline ? "#1e2a45" : "#22c55e";
   const statusLabel  = isBreach ? "BREACH" : isOffline ? "OFFLINE" : "SECURE";
   const statusColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
 
@@ -318,6 +318,24 @@ function DeviceCard({
       {/* Top row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            {d.status === "breach" ? (
+              <>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444", boxShadow: "0 0 8px #ef4444" }} className="animate-pulse" />
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#f87171", letterSpacing: 0.5 }}>BREACH</span>
+              </>
+            ) : isOffline ? (
+              <>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444" }} />
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#f87171", letterSpacing: 0.5 }}>OFFLINE</span>
+              </>
+            ) : (
+              <>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 8px rgba(34,197,94,0.4)" }} />
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#4ade80", letterSpacing: 0.5 }}>SECURE</span>
+              </>
+            )}
+          </div>
           <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 14, color: "#f1f5f9", marginBottom: 2 }}>
             {d.deviceId}
           </div>
@@ -632,7 +650,7 @@ export default function Dashboard() {
         }
       }
 
-      if (lastMessage?.type === "device_update" && d?.deviceId) {
+      if ((lastMessage?.type === "device_update" || lastMessage?.type === "device_added") && d?.deviceId) {
         setDevices((prev) => {
           const exists = prev.some((dev) => dev.deviceId === d.deviceId);
           if (!exists) return [...prev, { deviceId: d.deviceId as string, status: (d.status as string) || "ok", battery: d.battery as number, rssi: d.rssi as number, lastSeen: d.lastSeen as string }];
@@ -745,16 +763,16 @@ export default function Dashboard() {
 
   // ── Derived stats ──
   const okCount      = devices.filter((d) => d.status === "ok" && !isDeviceOffline(d)).length;
-  const breachCount  = devices.filter((d) => d.status === "breach" && !isDeviceOffline(d)).length;
-  const offlineCount = devices.filter((d) => isDeviceOffline(d)).length;
+  const breachCount  = devices.filter((d) => d.status === "breach").length;
+  const offlineCount = devices.filter((d) => isDeviceOffline(d) && d.status !== "breach").length;
   const unackCount   = alerts.filter((a) => !a.acknowledged).length;
 
   const filteredDevices = devices.filter((d) => {
     if (!d?.deviceId) return false;
     const offline = isDeviceOffline(d);
     if (filter === "ok"      && (d.status !== "ok" || offline)) return false;
-    if (filter === "breach"  && (d.status !== "breach" || offline)) return false;
-    if (filter === "offline" && !offline) return false;
+    if (filter === "breach"  && (d.status !== "breach")) return false;
+    if (filter === "offline" && (!offline || d.status === "breach")) return false;
     if (filter === "low_battery" && (d.battery === undefined || d.battery > 20)) return false;
     if (searchQuery && !d.deviceId.toLowerCase().includes(searchQuery.toLowerCase()) && !(d.roomId && d.roomId.toString().toLowerCase().includes(searchQuery.toLowerCase()))) return false;
     return true;
