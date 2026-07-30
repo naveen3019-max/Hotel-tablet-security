@@ -995,6 +995,10 @@ async def breach_instant(
     # Basic validation only
     if not deviceId or len(deviceId) > 50:
         raise HTTPException(400, "Invalid deviceId")
+        
+    current_device = await devices_collection.find_one({"_id": deviceId})
+    if not current_device:
+        return {"ok": False, "status": "deleted"}
     
     # Save breach
     await devices_collection.update_one(
@@ -1035,6 +1039,9 @@ async def alert_breach(
 ):
     """Record breach alert (JWT protected)"""
     try:
+        current_device = await devices_collection.find_one({"_id": b.deviceId})
+        if not current_device:
+            return {"ok": False, "status": "deleted"}
         # ← Log entry immediately so Render shows receipt even if something later fails
         logger.info(
             f"🚨 Breach received: "
@@ -1165,6 +1172,10 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
     t.ts = get_ist_time()
     logger.warning(f"TAMPER ALERT: Device {t.deviceId}, Threats {t.threats}")
     
+    current_device = await devices_collection.find_one({"_id": t.deviceId})
+    if not current_device:
+        return {"ok": False, "status": "deleted"}
+    
     # Update device status
     await devices_collection.update_one(
         {"_id": t.deviceId},
@@ -1220,6 +1231,10 @@ async def alert_battery(b: Battery, device=Depends(get_current_device)):
     b.ts = get_ist_time()
     logger.warning(f"BATTERY ALERT: Device {b.deviceId}, Level {b.level}%")
     
+    current_device = await devices_collection.find_one({"_id": b.deviceId})
+    if not current_device:
+        return {"ok": False, "status": "deleted"}
+    
     # Update device battery
     device_doc = await devices_collection.find_one({"_id": b.deviceId})
     
@@ -1273,6 +1288,10 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     """Record device heartbeat (JWT protected)"""
     # ALWAYS use server IST time (ignore device timestamp to prevent timezone issues)
     h.ts = get_ist_time()
+    
+    current_device = await devices_collection.find_one({"_id": h.deviceId})
+    if not current_device:
+        return {"ok": False, "status": "deleted"}
     
     # Print for immediate visibility
     print(f"💓 HEARTBEAT: {h.deviceId} | Room: {h.roomId} | RSSI: {h.rssi} dBm | Battery: {h.battery}%", flush=True)
