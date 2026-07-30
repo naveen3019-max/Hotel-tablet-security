@@ -1291,7 +1291,8 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     
     current_device = await devices_collection.find_one({"_id": h.deviceId})
     if not current_device:
-        return {"ok": False, "status": "deleted"}
+        logger.warning(f"Heartbeat from deleted device {h.deviceId} — rejected")
+        raise HTTPException(404, "Device not registered")
     
     # Print for immediate visibility
     print(f"💓 HEARTBEAT: {h.deviceId} | Room: {h.roomId} | RSSI: {h.rssi} dBm | Battery: {h.battery}%", flush=True)
@@ -1679,39 +1680,36 @@ async def list_devices(authorization: str = Header(None)):
 
 # Delete device (Owner only)
 @app.delete("/api/devices/{device_id}")
-async def delete_device(device_id: str):
+async def delete_device(device_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a device - Owner dashboard feature"""
-    # Try deleting by string _id
-    result = await devices_collection.delete_one({"_id": device_id})
+    hotelId = current_user.get("hotel_id", "default")
     
-    # If not found, try deleting by ObjectId (if manually inserted)
-    if result.deleted_count == 0:
+    # Verify device belongs to this hotel
+    # Check by _id or device_id
+    device = await devices_collection.find_one({"$or": [{"_id": device_id}, {"device_id": device_id}], "hotel_id": hotelId})
+    
+    # Check manual ObjectId case if needed
+    if not device:
         try:
-            result = await devices_collection.delete_one({"_id": ObjectId(device_id)})
+            device = await devices_collection.find_one({"_id": ObjectId(device_id), "hotel_id": hotelId})
         except:
             pass
             
-    # If STILL not found, try deleting by device_id field
-    if result.deleted_count == 0:
-        result = await devices_collection.delete_one({"device_id": device_id})
+    if not device:
+        raise HTTPException(404, f"Device {device_id} not found in hotel {hotelId}")
 
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail=f"Device {device_id} not found in DB")
+    # Delete from all collections
+    await devices_collection.delete_one({"_id": device.get("_id")})
+    await alerts_collection.delete_many({"$or": [{"device_id": device_id}, {"deviceId": device_id}]})
     
-    # Delete associated alerts asynchronously
-    # Note: Using $or to handle both snake_case and camelCase field names
-    asyncio.create_task(alerts_collection.delete_many({
-        "$or": [{"device_id": device_id}, {"deviceId": device_id}]
-    }))
-    
-    logger.info(f"Device {device_id} deleted")
-    
-    # Broadcast device removal
-    # ← ADD hotel_id lookup
-    device_hotel_id = "default"  # We already deleted it above, so hotel_id might be lost unless we fetch first
-    await broadcast_event("device_deleted", {"deviceId": device_id}, hotel_id="ALL") # broadcast to ALL or we need to find it before delete
-    
-    return {"ok": True, "message": f"Device {device_id} deleted successfully"}
+    # Optional FCM token deletion if the collection existed
+    # await fcm_tokens_collection.delete_many({"deviceId": device_id})
+
+    # Broadcast to dashboard
+    await broadcast_event("device_deleted", {"deviceId": device_id, "hotelId": hotelId})
+
+    logger.info(f"Device {device_id} deleted from hotel {hotelId}")
+    return {"status": "deleted", "deviceId": device_id}
 
 # Clear all database data (DANGER ZONE - Fresh start)
 @app.post("/api/admin/clear-database")

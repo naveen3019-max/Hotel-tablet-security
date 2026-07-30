@@ -754,9 +754,14 @@ export default function Dashboard() {
 
   const handleDeleteDevice = async (deviceId: string) => {
     try {
-      await fetch(`${API}/api/devices/${deviceId}`, { method: "DELETE", headers: { Authorization: `Bearer ${user?.token}` } });
-      setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
-      setDeleteConfirm(null);
+      const res = await fetch(`${API}/api/devices/${deviceId}`, { method: "DELETE", headers: { Authorization: `Bearer ${user?.token}` } });
+      if (res.ok) {
+        setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId));
+        setDeleteConfirm(null);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Delete failed: ${err.detail || res.status}`);
+      }
     } catch (e) { console.error("Failed to delete device", e); }
   };
 
