@@ -1682,21 +1682,30 @@ async def list_devices(authorization: str = Header(None)):
 @app.delete("/api/devices/{device_id}")
 async def delete_device(device_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a device - Owner dashboard feature"""
-    hotelId = current_user.get("hotel_id", "default")
+    hotelId = current_user.get("hotel_id")
+    role = current_user.get("role")
     
-    # Verify device belongs to this hotel
-    # Check by _id or device_id
-    device = await devices_collection.find_one({"$or": [{"_id": device_id}, {"device_id": device_id}], "hotel_id": hotelId})
+    # Verify device belongs to this hotel (unless super_admin)
+    query = {"$or": [{"_id": device_id}, {"device_id": device_id}]}
+    if role != "super_admin" and hotelId:
+        query["hotel_id"] = hotelId
+        
+    device = await devices_collection.find_one(query)
     
     # Check manual ObjectId case if needed
     if not device:
         try:
-            device = await devices_collection.find_one({"_id": ObjectId(device_id), "hotel_id": hotelId})
+            oid_query = {"_id": ObjectId(device_id)}
+            if role != "super_admin" and hotelId:
+                oid_query["hotel_id"] = hotelId
+            device = await devices_collection.find_one(oid_query)
         except:
             pass
             
     if not device:
-        raise HTTPException(404, f"Device {device_id} not found in hotel {hotelId}")
+        raise HTTPException(404, f"Device {device_id} not found (User role: {role}, Hotel: {hotelId})")
+
+    actual_hotel_id = device.get("hotel_id", hotelId or "default")
 
     # Delete from all collections
     await devices_collection.delete_one({"_id": device.get("_id")})
@@ -1706,9 +1715,9 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
     # await fcm_tokens_collection.delete_many({"deviceId": device_id})
 
     # Broadcast to dashboard
-    await broadcast_event("device_deleted", {"deviceId": device_id, "hotelId": hotelId})
+    await broadcast_event("device_deleted", {"deviceId": device_id, "hotelId": actual_hotel_id})
 
-    logger.info(f"Device {device_id} deleted from hotel {hotelId}")
+    logger.info(f"Device {device_id} deleted from hotel {actual_hotel_id}")
     return {"status": "deleted", "deviceId": device_id}
 
 # Clear all database data (DANGER ZONE - Fresh start)
