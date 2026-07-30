@@ -999,8 +999,7 @@ async def breach_instant(
     # Save breach
     await devices_collection.update_one(
         {"_id": deviceId},
-        {"$set": {"status": StatusEnum.breach}},
-        upsert=True
+        {"$set": {"status": StatusEnum.breach}}
     )
     
     await alerts_collection.insert_one({
@@ -1174,8 +1173,7 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
                 "status": StatusEnum.compromised,
                 "last_seen": get_utc_naive()
             }
-        },
-        upsert=True
+        }
     )
     
     # Create alert
@@ -1233,8 +1231,7 @@ async def alert_battery(b: Battery, device=Depends(get_current_device)):
                 "battery": b.level,
                 "last_seen": get_utc_naive()
             }
-        },
-        upsert=True
+        }
     )
     
     # Create alert
@@ -1307,8 +1304,7 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
                 "status": StatusEnum.breach,
                 "rssi": h.rssi,
                 "roomId": h.roomId
-            }},
-            upsert=True
+            }}
         )
         
         # Only create alert if not already breached
@@ -1492,9 +1488,11 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     try:
         result = await devices_collection.update_one(
             {"_id": h.deviceId},
-            {"$set": update_data},
-            upsert=True
+            {"$set": update_data}
         )
+        if result.matched_count == 0:
+            logger.warning(f"Heartbeat ignored for deleted device: {h.deviceId}")
+            return {"ok": False, "status": "deleted"}
         logger.info(f"Heartbeat DB write: matched={result.matched_count}, modified={result.modified_count}, upserted={result.upserted_id}")
     except Exception as e:
         logger.error(f"❌ MongoDB write failed in heartbeat for {h.deviceId}: {e}")
