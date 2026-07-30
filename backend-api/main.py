@@ -1685,35 +1685,34 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
     hotelId = current_user.get("hotel_id")
     role = current_user.get("role")
     
-    # Verify device belongs to this hotel (unless super_admin)
-    query = {"$or": [{"_id": device_id}, {"device_id": device_id}]}
-    if role != "super_admin" and hotelId:
-        query["hotel_id"] = hotelId
-        
-    device = await devices_collection.find_one(query)
+    # Find device first without hotel restriction to see if it even exists
+    device = await devices_collection.find_one({"$or": [{"_id": device_id}, {"device_id": device_id}]})
     
     # Check manual ObjectId case if needed
     if not device:
         try:
-            oid_query = {"_id": ObjectId(device_id)}
-            if role != "super_admin" and hotelId:
-                oid_query["hotel_id"] = hotelId
-            device = await devices_collection.find_one(oid_query)
+            device = await devices_collection.find_one({"_id": ObjectId(device_id)})
         except:
             pass
             
     if not device:
-        raise HTTPException(404, f"Device {device_id} not found (User role: {role}, Hotel: {hotelId})")
+        raise HTTPException(404, f"Device {device_id} not found in DB! (Role: {role}, Hotel: '{hotelId}')")
 
-    actual_hotel_id = device.get("hotel_id", hotelId or "default")
+    device_hotel = device.get("hotel_id")
+    
+    # Verify device belongs to this hotel (unless super_admin)
+    if role != "super_admin":
+        # If user has a hotelId, it must match the device's hotel_id
+        # We also handle the case where device might not have a hotel_id yet (legacy)
+        if hotelId and device_hotel and device_hotel != hotelId:
+            raise HTTPException(403, f"Cannot delete device from another hotel. (User hotel: '{hotelId}', Device hotel: '{device_hotel}')")
+
+    actual_hotel_id = device_hotel or hotelId or "default"
 
     # Delete from all collections
     await devices_collection.delete_one({"_id": device.get("_id")})
     await alerts_collection.delete_many({"$or": [{"device_id": device_id}, {"deviceId": device_id}]})
     
-    # Optional FCM token deletion if the collection existed
-    # await fcm_tokens_collection.delete_many({"deviceId": device_id})
-
     # Broadcast to dashboard
     await broadcast_event("device_deleted", {"deviceId": device_id, "hotelId": actual_hotel_id})
 
