@@ -1695,11 +1695,15 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
         except:
             pass
             
-    # Emergency fallback: type mismatch or whitespace issues
+    # Emergency fallback: type mismatch or whitespace issues (including internal newlines)
     if not device:
+        import re
+        req_id_clean = re.sub(r'\s+', '', device_id)
         all_devices = await devices_collection.find({}).to_list(1000)
         for d in all_devices:
-            if str(d.get("_id")).strip() == device_id.strip() or str(d.get("device_id", "")).strip() == device_id.strip():
+            db_id_clean = re.sub(r'\s+', '', str(d.get("_id")))
+            db_device_id_clean = re.sub(r'\s+', '', str(d.get("device_id", "")))
+            if db_id_clean == req_id_clean or db_device_id_clean == req_id_clean:
                 device = d
                 break
                 
