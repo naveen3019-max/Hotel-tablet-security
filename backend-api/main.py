@@ -1727,6 +1727,11 @@ async def delete_device(device_id: str, current_user: dict = Depends(get_current
     logger.info(f"Device {device_id} deleted from hotel {actual_hotel_id}")
     return {"status": "deleted", "deviceId": device_id}
 
+@app.get("/api/admin/devices/dump")
+async def dump_devices():
+    all_devs = await devices_collection.find({}).to_list(1000)
+    return [{"_id": str(d.get("_id")), "_id_type": str(type(d.get("_id"))), "device_id": str(d.get("device_id")), "hotel_id": str(d.get("hotel_id"))} for d in all_devs]
+
 # Clear all database data (DANGER ZONE - Fresh start)
 @app.post("/api/admin/clear-database")
 async def clear_database(confirm: str = Body(..., embed=True)):
