@@ -1,4 +1,4 @@
-package com.example.hotel.security
+﻿package com.example.hotel.security
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -18,7 +18,7 @@ import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
-// ← FIX (CAUSE 1): Need these to check location permission and services
+// â† FIX (CAUSE 1): Need these to check location permission and services
 import android.Manifest
 import android.content.pm.PackageManager
 import android.location.LocationManager
@@ -31,7 +31,7 @@ class SixSignalMonitor(private val context: Context) {
         firstWifiLossTime = 0L
         isBreachActive = false
         lastBreachSentTime = 0L
-        Log.d(TAG, "WiFi lost state reset — breach detection reset for next disconnect")
+        Log.d(TAG, "WiFi lost state reset â€” breach detection reset for next disconnect")
     }
     private var isRunning = false
     private var lastCheckTime = 0L
@@ -43,7 +43,7 @@ class SixSignalMonitor(private val context: Context) {
         isStartupGracePeriod = true
         Handler(Looper.getMainLooper()).postDelayed({
             isStartupGracePeriod = false
-            Log.d(TAG, "Grace period ended — breach detection now active")
+            Log.d(TAG, "Grace period ended â€” breach detection now active")
         }, 8_000L)
     }
 
@@ -52,7 +52,7 @@ class SixSignalMonitor(private val context: Context) {
         private const val BREACH_COOLDOWN = 15_000L // 15 second cooldown between breach POSTs
         private const val PREFS_NAME = "hotel_prefs" // SharedPreferences name for config
 
-        // ← FIXED: Store breach locally when offline
+        // â† FIXED: Store breach locally when offline
         @Volatile var lastBreachSentTime = 0L
         @Volatile var isBreachActive = false
         @Volatile var pendingBreachRssi: Int? = null
@@ -62,12 +62,12 @@ class SixSignalMonitor(private val context: Context) {
         fun setInstance(monitor: SixSignalMonitor) { instance = monitor }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Network-bound connection helper
     // When WiFi is OFF the system still has mobile/ethernet networks available.
     // Binding the socket to one of those bypasses the dead WiFi interface and
     // gives Android a working DNS resolver, fixing UnknownHostException.
-    // ─────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private fun openConnectionOnAnyNetwork(
         urlString: String
     ): HttpURLConnection {
@@ -83,7 +83,7 @@ class SixSignalMonitor(private val context: Context) {
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
             try {
                 val conn = network.openConnection(url) as HttpURLConnection
-                Log.i(TAG, "✅ Using non-WiFi network for breach POST")
+                Log.i(TAG, "âœ… Using non-WiFi network for breach POST")
                 return conn
             } catch (e: Exception) {
                 Log.w(TAG, "Network $network failed: ${e.message}")
@@ -131,7 +131,7 @@ class SixSignalMonitor(private val context: Context) {
         return timeSinceLastCheck < 30_000L
     }
 
-    // ← FIXED BUG 2: triggerBreach now actually sends HTTP POST to backend
+    // â† FIXED BUG 2: triggerBreach now actually sends HTTP POST to backend
     fun triggerBreach(
         reason: String,
         rssi: Int,
@@ -142,7 +142,7 @@ class SixSignalMonitor(private val context: Context) {
         // Dedup check
         if (now - Companion.lastBreachSentTime < 
             BREACH_COOLDOWN) {
-            Log.w(TAG, "Breach cooldown — skip")
+            Log.w(TAG, "Breach cooldown â€” skip")
             return
         }
         
@@ -156,7 +156,7 @@ class SixSignalMonitor(private val context: Context) {
         if (deviceId.isEmpty() || 
             deviceId == "UNKNOWN" ||
             roomId.isEmpty()) {
-            Log.e(TAG, "No deviceId — cannot breach")
+            Log.e(TAG, "No deviceId â€” cannot breach")
             return
         }
         
@@ -164,10 +164,10 @@ class SixSignalMonitor(private val context: Context) {
         Companion.isBreachActive = true
         
         Log.e(TAG,
-            "🚨 BREACH: $reason " +
+            "ðŸš¨ BREACH: $reason " +
             "Device:$deviceId RSSI:$rssi")
         
-        // ← Call fireBreach directly
+        // â† Call fireBreach directly
         fireBreach(rssi = if (rssi > -10) -127 
                           else rssi, reason = reason)
     }
@@ -180,11 +180,11 @@ class SixSignalMonitor(private val context: Context) {
         
         val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
         val deviceIdVal = prefs.getString("device_id", null) ?: run {
-            Log.e(TAG, "fireBreach: deviceId is null — aborting")
+            Log.e(TAG, "fireBreach: deviceId is null â€” aborting")
             return
         }
         val roomIdVal = prefs.getString("room_id", null) ?: run {
-            Log.e(TAG, "fireBreach: roomId is null — aborting")
+            Log.e(TAG, "fireBreach: roomId is null â€” aborting")
             return
         }
         
@@ -192,7 +192,7 @@ class SixSignalMonitor(private val context: Context) {
             .getString("authToken", null)
 
         if (freshToken == null) {
-            Log.e(TAG, "fireBreach: authToken is null — check SharedPreferences key name")
+            Log.e(TAG, "fireBreach: authToken is null â€” check SharedPreferences key name")
             // Try alternate key names
             val altToken = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
                 .getString("device_token", null)
@@ -200,7 +200,7 @@ class SixSignalMonitor(private val context: Context) {
                 .getString("authToken", null)
                 
             if (altToken == null) {
-                Log.e(TAG, "fireBreach: no token in any pref — cannot POST breach")
+                Log.e(TAG, "fireBreach: no token in any pref â€” cannot POST breach")
                 return
             }
             Log.d(TAG, "fireBreach: found token in alternate prefs")
@@ -228,7 +228,7 @@ class SixSignalMonitor(private val context: Context) {
                     try {
                         val backendUrl = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
                             .getString("backend_base_url", "https://hotel-tablet-security.onrender.com")
-                        // ← FIXED: bind to mobile/ethernet to bypass dead WiFi interface
+                        // â† FIXED: bind to mobile/ethernet to bypass dead WiFi interface
                         val conn = openConnectionOnAnyNetwork(
                             "$backendUrl/api/alert/breach"
                         ).apply {
@@ -243,16 +243,16 @@ class SixSignalMonitor(private val context: Context) {
                             put("deviceId", deviceId)
                             put("roomId", roomId)
                             put("rssi", rssi)
-                            // ← ADD message field
+                            // â† ADD message field
                             put("message", reason)
                         }
                         OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
                         val code = conn.responseCode
-                        Log.d(TAG, "Breach POST attempt ${attempt + 1} → HTTP $code")
+                        Log.d(TAG, "Breach POST attempt ${attempt + 1} â†’ HTTP $code")
                         when {
-                            code in 200..299 -> { posted = true; Log.d(TAG, "✅ Breach POST succeeded") }
-                            code == 401 -> { Log.e(TAG, "❌ 401 — token rejected, stopping retries"); return@Thread }
-                            else -> Log.w(TAG, "⚠️ HTTP $code — will retry")
+                            code in 200..299 -> { posted = true; Log.d(TAG, "âœ… Breach POST succeeded") }
+                            code == 401 -> { Log.e(TAG, "âŒ 401 â€” token rejected, stopping retries"); return@Thread }
+                            else -> Log.w(TAG, "âš ï¸ HTTP $code â€” will retry")
                         }
                         conn.disconnect()
                     } catch (e: Exception) {
@@ -260,7 +260,7 @@ class SixSignalMonitor(private val context: Context) {
                     }
                     if (!posted) Thread.sleep(3_000L)
                 }
-                if (!posted) Log.e(TAG, "❌ All 5 breach POST attempts failed")
+                if (!posted) Log.e(TAG, "âŒ All 5 breach POST attempts failed")
             } finally {
                 if (wakeLock.isHeld) wakeLock.release()
             }
@@ -297,7 +297,7 @@ class SixSignalMonitor(private val context: Context) {
             deviceId.isEmpty()) return false
         
         return try {
-            // ← FIXED: bind to mobile/ethernet to bypass dead WiFi interface
+            // â† FIXED: bind to mobile/ethernet to bypass dead WiFi interface
             val conn = openConnectionOnAnyNetwork(
                 "$backendUrl/api/alert/breach"
             )
@@ -307,7 +307,7 @@ class SixSignalMonitor(private val context: Context) {
             conn.setRequestProperty(
                 "Authorization", "Bearer $deviceToken")
             conn.doOutput = true
-            // ← SHORT timeouts so retry fast
+            // â† SHORT timeouts so retry fast
             conn.connectTimeout = 5000  // 5s
             conn.readTimeout = 5000     // 5s
             
@@ -347,9 +347,9 @@ class SixSignalMonitor(private val context: Context) {
             wifiData.rssi <= -127) {
             
             if (skipConfirmationDelay) {
-                // ← Instant breach from Receiver
+                // â† Instant breach from Receiver
                 Log.e(TAG,
-                    "⚡ INSTANT BREACH — " +
+                    "âš¡ INSTANT BREACH â€” " +
                     "skipDelay=true")
                 triggerBreach(
                     "WiFi DISABLING instant",
@@ -363,10 +363,10 @@ class SixSignalMonitor(private val context: Context) {
             // Normal path with 8s timer
             if (firstWifiLossTime == 0L) {
                 firstWifiLossTime = now
-                Log.w(TAG, "WiFi loss — 8s timer")
+                Log.w(TAG, "WiFi loss â€” 8s timer")
             } else if (now - firstWifiLossTime 
                 >= 8_000L) {
-                Log.e(TAG, "8s confirmed — breach!")
+                Log.e(TAG, "8s confirmed â€” breach!")
                 triggerBreach(
                     "WiFi OFF confirmed 8s",
                     rssi = -127
@@ -381,14 +381,14 @@ class SixSignalMonitor(private val context: Context) {
                 Log.d(TAG, "WiFi restored")
             }
             
-            // ← NEW: Check authorized network
+            // â† NEW: Check authorized network
             checkWrongNetwork()
             
             Log.d(TAG, "WiFi OK RSSI:${wifiData.rssi}")
         }
     }
 
-    // ← FIX (CAUSE 1 + CAUSE 2): Periodic fallback check (15 s heartbeat path).
+    // â† FIX (CAUSE 1 + CAUSE 2): Periodic fallback check (15 s heartbeat path).
     //   NetworkCallback is the PRIMARY trigger (fast, event-driven). This runs as a
     //   backup every 10 s via performSecurityCheck() to catch any missed events.
     private fun checkWrongNetwork() {
@@ -397,11 +397,11 @@ class SixSignalMonitor(private val context: Context) {
         val authorizedSsid  = prefs.getString("authorized_ssid",  "") ?: ""
 
         if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) {
-            Log.d(TAG, "checkWrongNetwork: no authorized network saved — skipping")
+            Log.d(TAG, "checkWrongNetwork: no authorized network saved â€” skipping")
             return
         }
 
-        // ← FIX (CAUSE 1): On Android 10+, WifiInfo.getSSID()/getBSSID() return junk
+        // â† FIX (CAUSE 1): On Android 10+, WifiInfo.getSSID()/getBSSID() return junk
         //   ("<unknown ssid>" / "02:00:00:00:00:00") unless BOTH conditions hold:
         //     (a) ACCESS_FINE_LOCATION is granted at RUNTIME
         //     (b) Location services are ENABLED
@@ -409,20 +409,20 @@ class SixSignalMonitor(private val context: Context) {
         //   switch because currentSsid is always "<unknown ssid>".
         if (!isLocationPermissionGranted()) {
             Log.e(TAG,
-                "⚠️ WIFI IDENTITY UNAVAILABLE — ACCESS_FINE_LOCATION not granted. " +
+                "âš ï¸ WIFI IDENTITY UNAVAILABLE â€” ACCESS_FINE_LOCATION not granted. " +
                 "Cannot verify authorized network. Triggering degraded-state breach.")
             triggerBreach(
-                "Cannot verify network identity — location permission denied",
+                "Cannot verify network identity â€” location permission denied",
                 rssi = -127
             )
             return
         }
         if (!isLocationEnabled()) {
             Log.e(TAG,
-                "⚠️ WIFI IDENTITY UNAVAILABLE — Location services are OFF. " +
+                "âš ï¸ WIFI IDENTITY UNAVAILABLE â€” Location services are OFF. " +
                 "Cannot verify authorized network. Triggering degraded-state breach.")
             triggerBreach(
-                "Cannot verify network identity — location services disabled",
+                "Cannot verify network identity â€” location services disabled",
                 rssi = -127
             )
             return
@@ -447,32 +447,32 @@ class SixSignalMonitor(private val context: Context) {
         // 1. Compare BSSID if available and not MAC-randomized
         if (authorizedBssid.isNotEmpty() && !isPrivacyMac && currentBssid.isNotEmpty()) {
             if (currentBssid != authorizedBssid) {
-                Log.e(TAG, "🚨 Wrong BSSID: $currentBssid expected: $authorizedBssid")
+                Log.e(TAG, "ðŸš¨ Wrong BSSID: $currentBssid expected: $authorizedBssid")
                 triggerBreach("Wrong network: $currentBssid expected: $authorizedBssid", rssi = -127)
             }
             return
         }
 
         // 2. Fallback to SSID comparison.
-        //    ← FIX (CAUSE 1): currentSsid is only trusted here because we have already
+        //    â† FIX (CAUSE 1): currentSsid is only trusted here because we have already
         //      confirmed location permission + services are ON above. If they were off,
         //      currentSsid would be "<unknown ssid>" even on the authorized network and
         //      we would have returned early with a degraded-state breach instead.
         if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != "<unknown ssid>") {
             if (currentSsid != authorizedSsid) {
-                Log.e(TAG, "🚨 Wrong SSID: $currentSsid expected: $authorizedSsid")
+                Log.e(TAG, "ðŸš¨ Wrong SSID: $currentSsid expected: $authorizedSsid")
                 triggerBreach("Wrong network: $currentSsid expected: $authorizedSsid", rssi = -127)
             }
         } else if (currentSsid == "<unknown ssid>") {
-            // ← FIX (CAUSE 1): We have permissions but Android still returned junk.
-            //   Possible brief handoff window — log and wait for next NetworkCallback.
+            // â† FIX (CAUSE 1): We have permissions but Android still returned junk.
+            //   Possible brief handoff window â€” log and wait for next NetworkCallback.
             Log.w(TAG,
-                "⚠️ SSID still '<unknown ssid>' even with location permission — " +
+                "âš ï¸ SSID still '<unknown ssid>' even with location permission â€” " +
                 "possible brief handoff window. NetworkCallback will catch the real value.")
         }
     }
 
-    // ← FIX (CAUSE 1): Centralised helpers used by checkWrongNetwork().
+    // â† FIX (CAUSE 1): Centralised helpers used by checkWrongNetwork().
     //   Mirrors the same helpers in ScreenAndWiFiReceiver so both code paths apply
     //   the same guard without duplicating the platform-version logic.
     private fun isLocationPermissionGranted(): Boolean {

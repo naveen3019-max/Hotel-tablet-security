@@ -1,12 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+
+    <!-- ← FIX: ACCESS_FINE_LOCATION was completely MISSING from the manifest.
+         On targetSdk < 33, this is the ONLY permission that unmasks WifiInfo.
+         On targetSdk >= 33 it is still required alongside NEARBY_WIFI_DEVICES
+         because some OEM ROMs (Samsung One UI, Redmi MIUI) still check it. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- ← FIX: NEARBY_WIFI_DEVICES now has android:usesPermissionFlags="neverForLocation"
+         and tools:targetApi="33" as required for targetSdk 33+.
+         This unmasks WifiInfo from NetworkCapabilities.transportInfo on API 33+
+         WITHOUT requiring location services to be turned on.
+         neverForLocation is safe here because WiFi identity (SSID/BSSID) is used
+         purely for security monitoring, NOT for deriving physical location. -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="33" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- Required for FOREGROUND_SERVICE_TYPE_DATA_SYNC — tells Android this service

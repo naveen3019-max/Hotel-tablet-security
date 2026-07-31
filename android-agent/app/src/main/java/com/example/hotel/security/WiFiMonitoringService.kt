@@ -1,5 +1,6 @@
 package com.example.hotel.security
 
+import android.Manifest
 import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -8,6 +9,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -22,37 +24,18 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 
 /**
  * WiFiMonitoringService — Doze-proof hotel tablet security monitor.
+ * targetSdkVersion = 34, compileSdkVersion = 34
  *
- * Design rationale:
- * ─────────────────
- * Android 10 (API 29) Doze Mode fires ~60 s after screen-off. It does two things:
- *   1. Defers Handler.postDelayed() / coroutine delay() — they simply do not fire.
- *   2. Blocks all network access — so even if the scheduler fires, HTTP POST fails.
- *
- * The ONLY blessed mechanism that fires during Doze is AlarmManager.setExactAndAllowWhileIdle().
- * Each alarm:
- *   • Wakes the CPU via ELAPSED_REALTIME_WAKEUP.
- *   • Delivers ACTION_HEARTBEAT to this service.
- *   • We acquire a TIMED WakeLock (10 s), run the Wi-Fi check + heartbeat POST,
- *     release the lock in a finally block, then schedule the next alarm.
- *
- * Why START_NOT_STICKY?
- *   AlarmManager re-delivers the intent on a schedule. We don't need Android to
- *   restart the service with the last intent — that could cause a stale check.
- *   AlarmManager is the authoritative restart mechanism here.
- *
- * Why timed WakeLock (not indefinite)?
- *   WakeLocks held indefinitely will flatten battery and are rejected by Play Store
- *   policies. The heartbeat POST takes < 2 s on a good connection; 10 s is a safe
- *   upper bound that auto-releases even if the POST hangs.
+ * On API 33+ (targetSdk >= 33) NEARBY_WIFI_DEVICES (with neverForLocation) is the
+ * permission that unmasks WifiInfo. ACCESS_FINE_LOCATION is still required on API < 33
+ * and on some OEM ROMs even on newer versions.
  */
 class WiFiMonitoringService : Service() {
 
-    // ── Lazy system service references ────────────────────────────────────────
-    // by lazy avoids crash if getSystemService() is called before onCreate().
     private val powerManager: PowerManager by lazy {
         getSystemService(Context.POWER_SERVICE) as PowerManager
     }
@@ -60,58 +43,41 @@ class WiFiMonitoringService : Service() {
         applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     }
     private val alarmManager: AlarmManager? by lazy {
-        // AlarmManager can theoretically be null on some embedded builds — handle it.
         getSystemService(Context.ALARM_SERVICE) as? AlarmManager
     }
 
-    // ← FIX (CAUSE 2): ConnectivityManager for registering the NetworkCallback
+    // ← FIX (CAUSE 2): Primary network-change trigger
     private val connectivityManager: ConnectivityManager by lazy {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
 
-    // SixSignalMonitor owns all Wi-Fi / heartbeat / breach logic — do NOT change it.
     val sixSignalMonitor = SixSignalMonitor(this)
-
-    // BroadcastReceiver registered programmatically (ACTION_SCREEN_OFF cannot use Manifest)
     private lateinit var wifiReceiver: ScreenAndWiFiReceiver
 
-    // ← FIX (CAUSE 2): Primary network-change trigger — more reliable than broadcasts
-    //   on Samsung/Redmi/Lenovo during fast hotspot-to-hotspot handoffs.
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null // ← FIX: nullable guard
-    @Volatile private var isNetworkCallbackRegistered = false               // ← FIX: double-registration guard
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var isNetworkCallbackRegistered = false
+
+    // ← DEBUG: counter so logcat shows every onCapabilitiesChanged fire
+    @Volatile private var capChangedCount = 0
 
     private var isServiceRunning = false
+    private val serviceStartTime = SystemClock.elapsedRealtime() // ← DEBUG: uptime tracking
 
     companion object {
         private const val TAG = "WiFiMonitoringService"
+        private const val DBG = "WIFI_BREACH_DEBUG"          // ← DEBUG: unified tag
         private const val CHANNEL_ID = "hotel_security_channel"
         private const val NOTIFICATION_ID = 1001
-
-        // ACTION sent by AlarmManager every HEARTBEAT_INTERVAL_MS
         const val ACTION_HEARTBEAT = "com.example.hotel.ACTION_HEARTBEAT"
-
-        // AlarmManager request code — must be unique per PendingIntent in this app
         private const val ALARM_REQUEST_CODE = 1001
-
-        // 10-second heartbeat — matches backend's expected interval exactly.
-        // DO NOT change this value per project constraints.
         private const val HEARTBEAT_INTERVAL_MS = 10_000L
-
-        // WakeLock timeout: enough for a heartbeat POST even on a slow connection.
-        // Must be released in finally {} — this is the safety net if the service crashes.
         private const val WAKELOCK_TIMEOUT_MS = 10_000L
-
-        // Breach cooldown to prevent flooding the backend with duplicate alerts
         const val BREACH_COOLDOWN = 15_000L
 
         @Volatile var isRunning: Boolean = false
         var lastBreachTime = 0L
-
-        // Singleton reference — nullable, always null-checked before use
         var instance: WiFiMonitoringService? = null
             private set
-
-        // ── Public helpers called from ScreenAndWiFiReceiver / SixSignalMonitor ──
 
         fun triggerBreachAlert(reason: String, rssi: Int = -127) {
             val now = SystemClock.elapsedRealtime()
@@ -128,13 +94,9 @@ class WiFiMonitoringService : Service() {
         }
 
         fun reAcquireWakeLock() {
-            // Called from ScreenAndWiFiReceiver when screen turns off — ensures the
-            // service WakeLock is held before Doze can suppress it.
             instance?.acquireTimedWakeLock()
         }
 
-        // Kept for source-compatibility with existing callers — interval is managed
-        // by AlarmManager now, not this method.
         fun setMonitoringInterval(interval: Long, reason: String = "") {
             Log.i(TAG, "Interval is controlled by AlarmManager ($HEARTBEAT_INTERVAL_MS ms). " +
                     "Ignoring request for $interval ms. Reason: $reason")
@@ -148,45 +110,37 @@ class WiFiMonitoringService : Service() {
         super.onCreate()
         instance = this
 
-        createNotificationChannel()
+        // ← DEBUG: Service-alive heartbeat — gaps in logcat reveal OEM kills
+        Log.i(DBG, "═══ WiFiMonitoringService.onCreate() ═══ " +
+                "SDK=${Build.VERSION.SDK_INT} targetSdk=34")
+        logPermissionState("onCreate")
 
-        // Must call startForeground() within 5 seconds of onCreate() to avoid ANR.
+        createNotificationChannel()
         startForegroundCompat()
 
-        // Register WiFi / screen state receiver programmatically.
-        // ACTION_SCREEN_OFF is only deliverable to runtime-registered receivers.
         wifiReceiver = ScreenAndWiFiReceiver()
         wifiReceiver.register(this)
         Log.d(TAG, "✅ WiFi broadcast receiver registered")
 
-        // ← FIX (CAUSE 2): Register the primary NetworkCallback for WiFi network changes.
-        //   This reliably catches fast hotspot-to-hotspot switches on all OEMs where
-        //   NETWORK_STATE_CHANGED_ACTION broadcast is flaky or null-extras.
+        // ← FIX + DEBUG: Register NetworkCallback — primary event-driven trigger
         registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val uptimeSec = (SystemClock.elapsedRealtime() - serviceStartTime) / 1000
+        // ← DEBUG: Log every command so we see the service is alive
+        Log.d(DBG, "onStartCommand action=${intent?.action} uptimeSec=$uptimeSec " +
+                "callbackRegistered=$isNetworkCallbackRegistered capChangedCount=$capChangedCount")
+
         when (intent?.action) {
-
             ACTION_HEARTBEAT -> {
-                // ── Alarm fired — this is the core Doze-proof heartbeat path ──
                 Log.d(TAG, "⏰ AlarmManager heartbeat fired")
-
-                // Acquire a TIMED WakeLock so the CPU stays awake long enough to
-                // complete the heartbeat POST. Released in the finally block inside
-                // acquireTimedWakeLock() after WAKELOCK_TIMEOUT_MS at most.
                 acquireTimedWakeLock()
-
-                // Run the Wi-Fi check + HTTP POST (SixSignalMonitor.forceImmediateCheck
-                // calls performSecurityCheck which sends the heartbeat)
                 sixSignalMonitor.forceImmediateCheck()
-
-                // Schedule the next alarm AFTER the check so there is no drift.
                 scheduleNextAlarm()
             }
 
             "WIFI_OFF_BREACH" -> {
-                // ── Instant breach from ScreenAndWiFiReceiver ──
                 Log.e(TAG, "🚨 WiFi OFF broadcast received — forcing immediate breach check")
                 acquireTimedWakeLock()
                 val isImmediate = intent.getBooleanExtra("IMMEDIATE_BREACH", false)
@@ -196,67 +150,47 @@ class WiFiMonitoringService : Service() {
             }
 
             "WRONG_NETWORK_BREACH" -> {
-                // ← NEW: Instant breach for wrong network
                 val reason = intent.getStringExtra("BREACH_REASON") ?: "Wrong WiFi network detected"
                 val rssi = intent.getIntExtra("FORCED_RSSI", -127)
-                
                 Log.e(TAG, "🚨 WRONG NETWORK BREACH: $reason")
-                
                 acquireTimedWakeLock()
                 scheduleNextAlarm()
-                
-                sixSignalMonitor.triggerBreach(
-                    reason = reason,
-                    rssi = rssi,
-                    isImmediate = true
-                )
+                sixSignalMonitor.triggerBreach(reason = reason, rssi = rssi, isImmediate = true)
             }
 
             else -> {
-                // ── Normal service start (boot, first launch, process restart) ──
                 if (!isServiceRunning) {
                     Log.i(TAG, "🚀 Starting hotel security monitoring")
                     isRunning = true
                     isServiceRunning = true
-
                     acquireTimedWakeLock()
                     scheduleNextAlarm()
-                    // Run an immediate check on start so we don't wait 10 s for first data
                     sixSignalMonitor.startMonitoring()
                 }
             }
         }
 
-        // START_NOT_STICKY: AlarmManager is the re-trigger mechanism.
-        // If Android kills the service between alarms we do NOT want it to restart
-        // immediately with a stale intent — the next alarm will restart it correctly.
         return START_NOT_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        // App was swiped from recents. Schedule one last alarm so the service
-        // restarts via AlarmManager before the next heartbeat is due.
         Log.w(TAG, "Task removed — scheduling resurrection alarm")
         scheduleNextAlarm()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.w(TAG, "Service destroyed — scheduling resurrection alarm")
+        // ← DEBUG: Log stack-like breadcrumb when service is destroyed
+        Log.w(DBG, "═══ WiFiMonitoringService.onDestroy() ═══ scheduling resurrection alarm")
 
-        // ← FIX (CAUSE 2): Unregister NetworkCallback safely — guard against double-unregister
         unregisterNetworkCallback()
 
-        try {
-            wifiReceiver.unregister(this)
-        } catch (e: Exception) {
+        try { wifiReceiver.unregister(this) } catch (e: Exception) {
             Log.w(TAG, "Receiver already unregistered: $e")
         }
 
         sixSignalMonitor.stopMonitoring()
-
-        // Schedule the next alarm so AlarmManager restarts us after the interval
         scheduleNextAlarm()
 
         isRunning = false
@@ -267,85 +201,94 @@ class WiFiMonitoringService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ← FIX (CAUSE 2): Primary, event-driven network-change trigger.
-    //
-    //   Why NetworkCallback and not NETWORK_STATE_CHANGED_ACTION?
-    //   • NETWORK_STATE_CHANGED_ACTION is deprecated (API 29+) and the extras
-    //     (EXTRA_NETWORK_INFO) may be null on Samsung / Redmi / Lenovo ROMs during
-    //     a fast hotspot-to-hotspot swap, silently skipping the check entirely.
-    //   • NetworkCallback.onCapabilitiesChanged() is the modern, reliable, event-
-    //     driven equivalent. Android delivers it within ~1-2 s of a network change
-    //     even during fast handoffs.
-    //   • WifiInfo from NetworkCapabilities.transportInfo is the only API that
-    //     returns the REAL BSSID/SSID on Android 12+ without location permission
-    //     (though location permission is still required on 10/11). We use it here
-    //     and pass the values directly to checkNetworkAuthorization().
-    //
-    //   Guard against double-registration: isNetworkCallbackRegistered flag ensures
-    //   we register at most once even if onCreate() is somehow called twice.
+    // NetworkCallback — PRIMARY fast trigger for any WiFi network change
     // ─────────────────────────────────────────────────────────────────────────
     private fun registerNetworkCallback() {
         if (isNetworkCallbackRegistered) {
-            Log.d(TAG, "NetworkCallback already registered — skipping")
+            Log.d(DBG, "NetworkCallback already registered — skipping duplicate")
             return
         }
 
         val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI) // ← WiFi only
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
 
-            // ← FIX (CAUSE 2): Called whenever the WiFi network capabilities change —
-            //   including BSSID/SSID change during a hotspot-to-hotspot handoff.
-            //   This fires within ~1-2 s on all OEMs, unlike the flaky broadcast.
-            override fun onCapabilitiesChanged(
-                network: Network,
-                caps: NetworkCapabilities
-            ) {
-                // Extract WifiInfo from capabilities — available on API 29+
+            // ← DEBUG: onAvailable fires when WiFi associates to any network
+            override fun onAvailable(network: Network) {
+                Log.d(DBG, "🔔 NetworkCallback.onAvailable network=$network " +
+                        "callbackRegistered=$isNetworkCallbackRegistered")
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                capChangedCount++
+
+                // ← DEBUG: Log raw transportInfo class/value BEFORE any filtering
+                val transportInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    caps.transportInfo
+                } else null
+                Log.d(DBG, "🔔 NetworkCallback.onCapabilitiesChanged #$capChangedCount " +
+                        "network=$network transportInfoClass=${transportInfo?.javaClass?.simpleName ?: "null"}")
+
+                // ← FIX + DEBUG: Extract WifiInfo from capabilities (API 29+)
                 val wifiInfo: WifiInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     caps.transportInfo as? WifiInfo
-                } else {
-                    null
-                }
+                } else null
 
                 if (wifiInfo != null) {
-                    val bssid = wifiInfo.bssid ?: ""
-                    // WifiInfo.ssid includes surrounding quotes — strip them
-                    val ssid  = wifiInfo.ssid?.replace("\"", "") ?: ""
-                    Log.d(TAG, "🔔 NetworkCallback.onCapabilitiesChanged BSSID=$bssid SSID=$ssid")
-                    // ← Delegate to the centralized check, passing LIVE bssid/ssid values
+                    // ← DEBUG: Log raw WifiInfo string before masking-logic touches it
+                    val rawBssid = wifiInfo.bssid ?: "null"
+                    val rawSsid  = wifiInfo.ssid  ?: "null"
+                    Log.d(DBG, "  WifiInfo.toString()=${wifiInfo}")
+                    Log.d(DBG, "  raw BSSID='$rawBssid'  raw SSID='$rawSsid'")
+
+                    val bssid = rawBssid
+                    val ssid  = rawSsid.replace("\"", "")
+
+                    // ← DEBUG: Log what we're passing into checkNetworkAuthorization
+                    Log.d(DBG, "  → calling checkNetworkAuthorization(liveBssid=$bssid, liveSsid=$ssid) from NetworkCallback")
                     wifiReceiver.checkNetworkAuthorization(
                         this@WiFiMonitoringService,
                         liveBssid = bssid,
-                        liveSsid  = ssid
+                        liveSsid  = ssid,
+                        source    = "NetworkCallback"       // ← DEBUG source tag
                     )
                 } else {
-                    // API < 29 or transportInfo unavailable — fall back to broadcast path
-                    Log.d(TAG, "🔔 NetworkCallback.onCapabilitiesChanged (no WifiInfo) — fallback check")
-                    wifiReceiver.checkNetworkAuthorization(this@WiFiMonitoringService)
+                    // ← DEBUG: explain WHY wifiInfo was null
+                    val sdkReason = when {
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ->
+                            "SDK < 29 (transportInfo API not available)"
+                        transportInfo == null ->
+                            "transportInfo is null — callback may have fired before WiFi fully attached"
+                        else ->
+                            "transportInfo is ${transportInfo.javaClass.simpleName} (not WifiInfo)"
+                    }
+                    Log.w(DBG, "  WifiInfo is null: $sdkReason — falling back to broadcast-path check")
+                    wifiReceiver.checkNetworkAuthorization(
+                        this@WiFiMonitoringService,
+                        source = "NetworkCallback-fallback"
+                    )
                 }
             }
 
-            // ← WiFi network was lost — existing WiFi-off breach logic stays in
-            //   ScreenAndWiFiReceiver / SixSignalMonitor (WIFI_STATE_CHANGED_ACTION).
-            //   This override is here only so the callback object is defined completely.
             override fun onLost(network: Network) {
-                Log.d(TAG, "🔔 NetworkCallback.onLost — WiFi lost event (handled by broadcast receiver)")
+                // ← DEBUG: Helps distinguish WiFi-lost from network-switch
+                Log.d(DBG, "🔔 NetworkCallback.onLost network=$network " +
+                        "(WiFi-off breach handled by broadcast receiver)")
             }
         }
 
         try {
             connectivityManager.registerNetworkCallback(request, networkCallback!!)
             isNetworkCallbackRegistered = true
-            Log.d(TAG, "✅ NetworkCallback registered for TRANSPORT_WIFI")
+            Log.d(DBG, "✅ NetworkCallback registered for TRANSPORT_WIFI at uptimeSec=" +
+                    "${(SystemClock.elapsedRealtime() - serviceStartTime) / 1000}")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to register NetworkCallback: ${e.message}")
+            Log.e(DBG, "❌ Failed to register NetworkCallback: ${e.message}")
         }
     }
 
-    // ← FIX (CAUSE 2): Safe unregister with null + flag guard
     private fun unregisterNetworkCallback() {
         val cb = networkCallback
         if (cb != null && isNetworkCallbackRegistered) {
@@ -353,108 +296,66 @@ class WiFiMonitoringService : Service() {
                 connectivityManager.unregisterNetworkCallback(cb)
                 isNetworkCallbackRegistered = false
                 networkCallback = null
-                Log.d(TAG, "✅ NetworkCallback unregistered")
+                Log.d(DBG, "✅ NetworkCallback unregistered")
             } catch (e: Exception) {
-                Log.w(TAG, "NetworkCallback unregister failed: ${e.message}")
+                Log.w(DBG, "NetworkCallback unregister failed: ${e.message}")
             }
         }
     }
 
+    // ← DEBUG: Centralised permission state logger — call at key lifecycle points
+    private fun logPermissionState(calledFrom: String) {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val nearbyGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.NEARBY_WIFI_DEVICES
+            ) == PackageManager.PERMISSION_GRANTED
+        } else null   // irrelevant below API 33
+
+        Log.i(DBG, "[$calledFrom] SDK=${Build.VERSION.SDK_INT} targetSdk=34 " +
+                "ACCESS_FINE_LOCATION=$fineGranted " +
+                "NEARBY_WIFI_DEVICES=${nearbyGranted ?: "N/A(<API33)"}")
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /**
-     * Schedule the next heartbeat alarm using setExactAndAllowWhileIdle().
-     *
-     * Why setExactAndAllowWhileIdle() and not setExact()?
-     *   setExact() is deferred during Doze — it is batched with other alarms and
-     *   may not fire for minutes. setExactAndAllowWhileIdle() is explicitly blessed
-     *   by Android to fire on time even in deep Doze, at the cost of a minimum
-     *   9-minute gap between alarms on API 31+ (we are on API 29 so no restriction).
-     *
-     * Why ELAPSED_REALTIME_WAKEUP?
-     *   It wakes the CPU from sleep. ELAPSED_REALTIME without WAKEUP would not fire
-     *   while the processor is asleep.
-     *
-     * Note: Do NOT use SCHEDULE_EXACT_ALARM (API 31+) — minSdk is 29.
-     */
     private fun scheduleNextAlarm() {
         val am = alarmManager ?: run {
             Log.e(TAG, "AlarmManager is null — cannot schedule heartbeat alarm")
             return
         }
-
         val intent = Intent(this, WiFiMonitoringService::class.java).apply {
             action = ACTION_HEARTBEAT
         }
         val pendingIntent = PendingIntent.getService(
-            this,
-            ALARM_REQUEST_CODE,
-            intent,
-            // FLAG_UPDATE_CURRENT replaces any existing alarm with the same request code.
-            // FLAG_IMMUTABLE is required on API 23+ for security.
+            this, ALARM_REQUEST_CODE, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val triggerAt = SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS
-
-        // setExactAndAllowWhileIdle() is available from API 23 (we are min API 29).
-        am.setExactAndAllowWhileIdle(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            triggerAt,
-            pendingIntent
-        )
-
+        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
         Log.d(TAG, "⏰ Next heartbeat alarm in ${HEARTBEAT_INTERVAL_MS / 1000}s")
     }
 
-    /**
-     * Acquire a TIMED PARTIAL_WAKE_LOCK.
-     *
-     * Why timed (not indefinite)?
-     * • Indefinite WakeLocks drain battery and are a red flag in ANR/battery analysis.
-     * • The heartbeat POST completes in < 2 s under normal conditions.
-     * • 10 s is a conservative upper bound — auto-releases even if the service crashes.
-     * • We ALSO release explicitly in finally{} inside the caller, so in the happy
-     *   path the lock is released promptly after the POST completes.
-     *
-     * setReferenceCounted(false) prevents a crash if acquire() is called twice
-     * (e.g., ACTION_HEARTBEAT and WIFI_OFF_BREACH arrive close together).
-     */
     internal fun acquireTimedWakeLock() {
         try {
             val wl = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "HotelSecurity:HeartbeatWakeLock"
+                PowerManager.PARTIAL_WAKE_LOCK, "HotelSecurity:HeartbeatWakeLock"
             )
             wl.setReferenceCounted(false)
-            wl.acquire(WAKELOCK_TIMEOUT_MS)   // auto-releases after 10 s
+            wl.acquire(WAKELOCK_TIMEOUT_MS)
             Log.d(TAG, "🔒 WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 1000}s timeout)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire WakeLock: ${e.message}")
         }
     }
 
-    /**
-     * Start this service as a foreground service with FOREGROUND_SERVICE_TYPE_DATA_SYNC.
-     *
-     * Why DATA_SYNC type?
-     *   Android 14+ requires a foreground service type. DATA_SYNC is the correct
-     *   semantic for a service that periodically syncs data (heartbeats) to a server.
-     *   It also requires FOREGROUND_SERVICE_DATA_SYNC permission in the manifest.
-     *
-     * Why PRIORITY_LOW notification?
-     *   Hotel guests should not be disturbed by a security notification. PRIORITY_LOW
-     *   keeps it below the fold in the notification shade with no sound/vibration.
-     *
-     * Why "Security monitoring active" and no room number?
-     *   Room numbers in notifications are a privacy/security risk if a guest sees them.
-     */
     private fun startForegroundCompat() {
         val notification = buildNotification()
         ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
+            this, NOTIFICATION_ID, notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         )
     }
@@ -462,29 +363,24 @@ class WiFiMonitoringService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Hotel Security",
-                // IMPORTANCE_LOW = no sound, no vibration, below-the-fold placement.
-                NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "Hotel Security", NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Security monitoring active"
                 setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)
             }
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Security monitoring active")
-            // Generic text — does NOT reveal room number or device ID to protect guest privacy
             .setContentText("Hotel tablet protection is running")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setOngoing(true)              // Cannot be dismissed by the user
-            .setPriority(NotificationCompat.PRIORITY_LOW)    // No sound, no heads-up
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
