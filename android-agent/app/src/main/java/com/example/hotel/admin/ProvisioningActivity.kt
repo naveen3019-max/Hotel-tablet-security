@@ -398,31 +398,22 @@ class ProvisioningActivity : AppCompatActivity() {
 
                 if (!locationGranted || !locationEnabled) {
                     val reason = when {
-                        !locationGranted && !locationEnabled ->
-                            "Location permission AND location services are required."
+                        !locationGranted && !locationEnabled -> "Location permission AND location services are required."
                         !locationGranted -> "Location permission (ACCESS_FINE_LOCATION) is required."
-                        else             -> "Location services must be ON."
+                        else -> "Location services must be ON."
                     }
-                    Log.w(TAG,
-                        "âš ï¸ Provisioning: $reason " +
-                        "Authorized network will be flagged as UNVERIFIED.")
-                    // â† FIX (CAUSE 1): Save a flag so monitoring code knows the network
-                    //   identity is unverified and can surface a degraded-state breach.
-                    getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
-                        .putBoolean("authorized_network_unverified", true)
-                        .apply()
+                    Log.e(TAG, "🚨 Provisioning Blocked: $reason")
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
                             this@ProvisioningActivity,
-                            "âš ï¸ $reason\n" +
-                            "Network identity CANNOT be verified.\n" +
-                            "Enable location permission & services for full protection.",
+                            "Enable Location to complete registration — this is required to verify the hotel WiFi network.",
                             Toast.LENGTH_LONG
                         ).show()
+                        statusText.text = "Registration blocked: $reason"
+                        registerButton.isEnabled = true
                     }
-                    // Do NOT block registration â€” let the device still register so
-                    // other breach signals (WiFi OFF) keep working. saveAuthorizedNetwork()
-                    // is skipped entirely to avoid writing junk data.
+                    // <- FIX: Return early so registration cannot be completed until Location is on
+                    return@launch
                 } else {
                     // Location permission + services are confirmed good â€” safe to save
                     saveAuthorizedNetwork()
@@ -612,3 +603,4 @@ class ProvisioningActivity : AppCompatActivity() {
         Log.i(TAG, "âœ… Authorized network saved: BSSID=$finalBssid SSID=$ssid")
     }
 }
+

@@ -1,4 +1,4 @@
-package com.example.hotel.security
+﻿package com.example.hotel.security
 
 import android.Manifest
 import android.content.BroadcastReceiver
@@ -26,7 +26,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "ScreenAndWiFiReceiver"
-        private const val DBG = "WIFI_BREACH_DEBUG"   // ← DEBUG: unified tag for logcat filtering
+        private const val DBG = "WIFI_BREACH_DEBUG"   // â† DEBUG: unified tag for logcat filtering
         private const val UNKNOWN_SSID = "<unknown ssid>"
         private const val PRIVACY_MAC  = "02:00:00:00:00:00"
     }
@@ -42,7 +42,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
             addAction(ConnectivityManager.CONNECTIVITY_ACTION)
         }
         context.registerReceiver(this, filter)
-        Log.d(TAG, "✅ WiFi broadcast receiver registered")
+        Log.d(TAG, "âœ… WiFi broadcast receiver registered")
     }
 
     fun unregister(context: Context) {
@@ -61,7 +61,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                     val wifiState = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN)
                     when (wifiState) {
                         WifiManager.WIFI_STATE_DISABLING -> {
-                            Log.e(TAG, "🚨 WiFi DISABLING!")
+                            Log.e(TAG, "ðŸš¨ WiFi DISABLING!")
                             sendServiceIntent(context, "WIFI_OFF_BREACH", true)
                         }
                         WifiManager.WIFI_STATE_DISABLED -> {
@@ -69,7 +69,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                             sendServiceIntent(context, "WIFI_OFF_BREACH", false)
                         }
                         WifiManager.WIFI_STATE_ENABLED -> {
-                            Log.d(TAG, "✅ WiFi ENABLED — sending WIFI_RESTORED")
+                            Log.d(TAG, "âœ… WiFi ENABLED â€” sending WIFI_RESTORED")
                             val si = Intent(context, WiFiMonitoringService::class.java).apply {
                                 this.action = "WIFI_RESTORED"
                             }
@@ -83,7 +83,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                 }
 
                 WifiManager.NETWORK_STATE_CHANGED_ACTION -> {
-                    // ← Kept as secondary/backup (deprecated but still works as fallback)
+                    // â† Kept as secondary/backup (deprecated but still works as fallback)
                     @Suppress("DEPRECATION")
                     val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiManager.EXTRA_NETWORK_INFO)
                     @Suppress("DEPRECATION")
@@ -125,23 +125,23 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         else context.startService(si)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // checkNetworkAuthorization — called from NetworkCallback (primary) and
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // checkNetworkAuthorization â€” called from NetworkCallback (primary) and
     // broadcast receiver (secondary). source tag identifies the call site in logs.
-    // ─────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     fun checkNetworkAuthorization(
         context: Context,
         liveBssid: String? = null,
         liveSsid:  String? = null,
-        source:    String  = "unknown"  // ← DEBUG: identifies call origin in logcat
+        source:    String  = "unknown"  // â† DEBUG: identifies call origin in logcat
     ) {
-        Log.d(DBG, "──────────────────────────────────────────────")
+        Log.d(DBG, "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
         Log.d(DBG, "checkNetworkAuthorization() called from='$source'")
 
-        // ← DEBUG: log SDK and targetSdk so we know which permission path applies
+        // â† DEBUG: log SDK and targetSdk so we know which permission path applies
         Log.d(DBG, "  SDK=${Build.VERSION.SDK_INT} targetSdk=34 (compileSdk=34)")
 
-        // ← DEBUG: log raw permission states
+        // â† DEBUG: log raw permission states
         val fineGranted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
@@ -158,7 +158,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
             null
         }
 
-        // ← DEBUG: log location services state
+        // â† DEBUG: log location services state
         val locEnabled = isLocationEnabled(context)
         Log.d(DBG, "  LocationManager.isLocationEnabled=$locEnabled")
 
@@ -168,45 +168,45 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         Log.d(DBG, "  authorizedBssid='$authorizedBssid'  authorizedSsid='$authorizedSsid'")
 
         if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) {
-            Log.d(DBG, "  → BRANCH: no authorized network saved — SKIPPED")
+            Log.d(DBG, "  â†’ BRANCH: no authorized network saved â€” SKIPPED")
             return
         }
 
-        // ── Permission guard ─────────────────────────────────────────────────
+        // â”€â”€ Permission guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // On API >= 33 (targetSdk 33+): NEARBY_WIFI_DEVICES is the primary permission.
         // On API <  33: ACCESS_FINE_LOCATION + location services is required.
-        // ← FIX: check both, emit clear degraded-breach if neither is satisfied.
+        // â† FIX: check both, emit clear degraded-breach if neither is satisfied.
         val canReadWifiIdentity: Boolean = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
                 // API 33+ path: NEARBY_WIFI_DEVICES sufficient (neverForLocation means
                 // location services ON/OFF doesn't matter for this permission)
                 val ok = nearbyGranted == true || fineGranted
                 Log.d(DBG, "  API>=33 permission check: NEARBY_WIFI_DEVICES=$nearbyGranted " +
-                        "OR ACCESS_FINE_LOCATION=$fineGranted → canReadWifiIdentity=$ok")
+                        "OR ACCESS_FINE_LOCATION=$fineGranted â†’ canReadWifiIdentity=$ok")
                 ok
             }
             else -> {
                 // API < 33 path: ACCESS_FINE_LOCATION AND location services both required
                 val ok = fineGranted && locEnabled
                 Log.d(DBG, "  API<33 permission check: ACCESS_FINE_LOCATION=$fineGranted " +
-                        "AND locationEnabled=$locEnabled → canReadWifiIdentity=$ok")
+                        "AND locationEnabled=$locEnabled â†’ canReadWifiIdentity=$ok")
                 ok
             }
         }
 
         if (!canReadWifiIdentity) {
             Log.e(DBG,
-                "  ⚠️ WIFI IDENTITY UNAVAILABLE — Cannot read WiFi identity. " +
+                "  âš ï¸ WIFI IDENTITY UNAVAILABLE â€” Cannot read WiFi identity. " +
                 "NEARBY_WIFI_DEVICES=$nearbyGranted ACCESS_FINE_LOCATION=$fineGranted " +
-                "locationEnabled=$locEnabled → triggering degraded-state breach")
-            triggerNetworkBreach(context, "Cannot verify network identity — permission/location unavailable")
+                "locationEnabled=$locEnabled â†’ triggering degraded-state breach")
+            triggerNetworkBreach(context, "Cannot verify network identity â€” permission/location unavailable")
             return
         }
 
-        // ── Resolve BSSID / SSID ─────────────────────────────────────────────
+        // â”€â”€ Resolve BSSID / SSID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (!wifiManager.isWifiEnabled) {
-            Log.d(DBG, "  → BRANCH: WiFi is disabled — skipped")
+            Log.d(DBG, "  â†’ BRANCH: WiFi is disabled â€” skipped")
             return
         }
 
@@ -227,44 +227,44 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
             Log.d(DBG, "  Using WifiManager.connectionInfo: BSSID='$currentBssid' SSID='$currentSsid'")
         }
 
-        // ← DEBUG: Log the raw values BEFORE privacy-MAC filtering
+        // â† DEBUG: Log the raw values BEFORE privacy-MAC filtering
         Log.d(DBG, "  raw currentBssid='$currentBssid'  raw currentSsid='$currentSsid'")
 
         val isPrivacyMac = currentBssid == PRIVACY_MAC
         Log.d(DBG, "  isPrivacyMac=$isPrivacyMac")
 
-        // ── Comparison branch ─────────────────────────────────────────────────
+        // â”€â”€ Comparison branch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (authorizedBssid.isNotEmpty() && !isPrivacyMac && currentBssid.isNotEmpty()) {
             if (currentBssid != authorizedBssid) {
-                Log.e(DBG, "  → BRANCH: BSSID MISMATCH — expected='$authorizedBssid' got='$currentBssid' → BREACH")
+                Log.e(DBG, "  â†’ BRANCH: BSSID MISMATCH â€” expected='$authorizedBssid' got='$currentBssid' â†’ BREACH")
                 triggerNetworkBreach(context, "Wrong WiFi network: $currentBssid")
             } else {
-                Log.d(DBG, "  → BRANCH: BSSID MATCH — authorized ✅")
+                Log.d(DBG, "  â†’ BRANCH: BSSID MATCH â€” authorized âœ…")
             }
             return
         }
 
         if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != UNKNOWN_SSID) {
             if (currentSsid != authorizedSsid) {
-                Log.e(DBG, "  → BRANCH: SSID MISMATCH — expected='$authorizedSsid' got='$currentSsid' → BREACH")
+                Log.e(DBG, "  â†’ BRANCH: SSID MISMATCH â€” expected='$authorizedSsid' got='$currentSsid' â†’ BREACH")
                 triggerNetworkBreach(context, "Wrong WiFi network: $currentSsid")
             } else {
-                Log.d(DBG, "  → BRANCH: SSID MATCH — authorized ✅")
+                Log.d(DBG, "  â†’ BRANCH: SSID MATCH â€” authorized âœ…")
             }
             return
         }
 
-        // ← DEBUG: catch-all so no branch is silent
-        Log.w(DBG, "  → BRANCH: no comparison performed — " +
+        // â† DEBUG: catch-all so no branch is silent
+        Log.w(DBG, "  â†’ BRANCH: no comparison performed â€” " +
                 "authorizedBssid='$authorizedBssid' authorizedSsid='$authorizedSsid' " +
                 "currentBssid='$currentBssid' currentSsid='$currentSsid' " +
                 "isPrivacyMac=$isPrivacyMac")
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Permission helpers — SDK-version-aware, exposed so SixSignalMonitor
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Permission helpers â€” SDK-version-aware, exposed so SixSignalMonitor
     // can call the same logic without duplicating version checks
-    // ─────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     fun isLocationPermissionGranted(context: Context): Boolean {
         val granted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
@@ -274,7 +274,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
     }
 
     fun isNearbyWifiGranted(context: Context): Boolean {
-        // ← FIX: NEARBY_WIFI_DEVICES is only a runtime permission on API 33+
+        // â† FIX: NEARBY_WIFI_DEVICES is only a runtime permission on API 33+
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context, Manifest.permission.NEARBY_WIFI_DEVICES
@@ -297,7 +297,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         return enabled
     }
 
-    // ← canReadWifiIdentity: single entry point for all code that needs to know
+    // â† canReadWifiIdentity: single entry point for all code that needs to know
     //   whether SSID/BSSID values from WifiManager/NetworkCapabilities are real.
     fun canReadWifiIdentity(context: Context): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -342,8 +342,9 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                 put("rssi", rssi); put("wifiBssid", "AA:BB:CC:DD:EE:FF"); put("battery", 50)
             }.toString()
             OutputStreamWriter(conn.outputStream).use { it.write(body); it.flush() }
-            Log.i(TAG, "✅ Recovery heartbeat: ${conn.responseCode} RSSI:$rssi")
+            Log.i(TAG, "âœ… Recovery heartbeat: ${conn.responseCode} RSSI:$rssi")
             conn.disconnect()
         } catch (e: Exception) { Log.e(TAG, "Recovery failed: ${e.message}") }
     }
 }
+
