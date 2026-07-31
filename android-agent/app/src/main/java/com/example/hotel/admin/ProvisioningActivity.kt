@@ -4,6 +4,7 @@ import android.content.ComponentName       // ← NEW: used to target MainActivi
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager   // ← NEW: COMPONENT_ENABLED_STATE_DISABLED
+import android.location.LocationManager    // ← FIX (CAUSE 1): check location services
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,8 +15,10 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat // ← FIX (CAUSE 1): runtime permission check
 import com.example.hotel.data.AgentRepository
 import com.example.hotel.data.RegisterRequest
+import android.Manifest                    // ← FIX (CAUSE 1): ACCESS_FINE_LOCATION
 import android.net.wifi.WifiManager // ← NEW: for authorized network
 import com.example.hotel.security.WiFiMonitoringService  // ← NEW: start WiFi monitoring
 import kotlinx.coroutines.Dispatchers
@@ -329,8 +332,60 @@ class ProvisioningActivity : AppCompatActivity() {
                 
                 android.util.Log.d("Provisioning", "Settings saved, registration complete!")
                 
-                // ← NEW: Save authorized WiFi network
-                saveAuthorizedNetwork()
+                // ← FIX (CAUSE 1): Verify ACCESS_FINE_LOCATION + location services are ON
+                //   BEFORE calling saveAuthorizedNetwork(). Without location permission,
+                //   wifiManager.connectionInfo returns "<unknown ssid>" / "02:00:00:00:00:00"
+                //   which would silently save junk as the "authorized" network, making
+                //   wrong-network detection blind on all subsequent network switches.
+                val locationGranted = ContextCompat.checkSelfPermission(
+                    this@ProvisioningActivity,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+
+                val locationEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    (getSystemService(Context.LOCATION_SERVICE) as LocationManager).isLocationEnabled
+                } else {
+                    val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                    @Suppress("DEPRECATION")
+                    lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                }
+
+                if (!locationGranted || !locationEnabled) {
+                    val reason = when {
+                        !locationGranted && !locationEnabled ->
+                            "Location permission AND location services are required."
+                        !locationGranted -> "Location permission (ACCESS_FINE_LOCATION) is required."
+                        else             -> "Location services must be ON."
+                    }
+                    Log.w(TAG,
+                        "⚠️ Provisioning: $reason " +
+                        "Authorized network will be flagged as UNVERIFIED.")
+                    // ← FIX (CAUSE 1): Save a flag so monitoring code knows the network
+                    //   identity is unverified and can surface a degraded-state breach.
+                    getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("authorized_network_unverified", true)
+                        .apply()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            this@ProvisioningActivity,
+                            "⚠️ $reason\n" +
+                            "Network identity CANNOT be verified.\n" +
+                            "Enable location permission & services for full protection.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    // Do NOT block registration — let the device still register so
+                    // other breach signals (WiFi OFF) keep working. saveAuthorizedNetwork()
+                    // is skipped entirely to avoid writing junk data.
+                } else {
+                    // Location permission + services are confirmed good — safe to save
+                    saveAuthorizedNetwork()
+                    getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("authorized_network_unverified", false)
+                        .apply()
+                    Log.i(TAG, "✅ Authorized network saved with verified location data")
+                }
                 
                 withContext(Dispatchers.Main) {
                     Toast.makeText(

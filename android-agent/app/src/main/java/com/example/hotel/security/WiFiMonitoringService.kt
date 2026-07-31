@@ -9,6 +9,11 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -59,11 +64,21 @@ class WiFiMonitoringService : Service() {
         getSystemService(Context.ALARM_SERVICE) as? AlarmManager
     }
 
+    // ← FIX (CAUSE 2): ConnectivityManager for registering the NetworkCallback
+    private val connectivityManager: ConnectivityManager by lazy {
+        getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    }
+
     // SixSignalMonitor owns all Wi-Fi / heartbeat / breach logic — do NOT change it.
     val sixSignalMonitor = SixSignalMonitor(this)
 
     // BroadcastReceiver registered programmatically (ACTION_SCREEN_OFF cannot use Manifest)
     private lateinit var wifiReceiver: ScreenAndWiFiReceiver
+
+    // ← FIX (CAUSE 2): Primary network-change trigger — more reliable than broadcasts
+    //   on Samsung/Redmi/Lenovo during fast hotspot-to-hotspot handoffs.
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null // ← FIX: nullable guard
+    @Volatile private var isNetworkCallbackRegistered = false               // ← FIX: double-registration guard
 
     private var isServiceRunning = false
 
@@ -143,6 +158,11 @@ class WiFiMonitoringService : Service() {
         wifiReceiver = ScreenAndWiFiReceiver()
         wifiReceiver.register(this)
         Log.d(TAG, "✅ WiFi broadcast receiver registered")
+
+        // ← FIX (CAUSE 2): Register the primary NetworkCallback for WiFi network changes.
+        //   This reliably catches fast hotspot-to-hotspot switches on all OEMs where
+        //   NETWORK_STATE_CHANGED_ACTION broadcast is flaky or null-extras.
+        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -225,6 +245,9 @@ class WiFiMonitoringService : Service() {
         super.onDestroy()
         Log.w(TAG, "Service destroyed — scheduling resurrection alarm")
 
+        // ← FIX (CAUSE 2): Unregister NetworkCallback safely — guard against double-unregister
+        unregisterNetworkCallback()
+
         try {
             wifiReceiver.unregister(this)
         } catch (e: Exception) {
@@ -242,6 +265,100 @@ class WiFiMonitoringService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ← FIX (CAUSE 2): Primary, event-driven network-change trigger.
+    //
+    //   Why NetworkCallback and not NETWORK_STATE_CHANGED_ACTION?
+    //   • NETWORK_STATE_CHANGED_ACTION is deprecated (API 29+) and the extras
+    //     (EXTRA_NETWORK_INFO) may be null on Samsung / Redmi / Lenovo ROMs during
+    //     a fast hotspot-to-hotspot swap, silently skipping the check entirely.
+    //   • NetworkCallback.onCapabilitiesChanged() is the modern, reliable, event-
+    //     driven equivalent. Android delivers it within ~1-2 s of a network change
+    //     even during fast handoffs.
+    //   • WifiInfo from NetworkCapabilities.transportInfo is the only API that
+    //     returns the REAL BSSID/SSID on Android 12+ without location permission
+    //     (though location permission is still required on 10/11). We use it here
+    //     and pass the values directly to checkNetworkAuthorization().
+    //
+    //   Guard against double-registration: isNetworkCallbackRegistered flag ensures
+    //   we register at most once even if onCreate() is somehow called twice.
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun registerNetworkCallback() {
+        if (isNetworkCallbackRegistered) {
+            Log.d(TAG, "NetworkCallback already registered — skipping")
+            return
+        }
+
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI) // ← WiFi only
+            .build()
+
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+
+            // ← FIX (CAUSE 2): Called whenever the WiFi network capabilities change —
+            //   including BSSID/SSID change during a hotspot-to-hotspot handoff.
+            //   This fires within ~1-2 s on all OEMs, unlike the flaky broadcast.
+            override fun onCapabilitiesChanged(
+                network: Network,
+                caps: NetworkCapabilities
+            ) {
+                // Extract WifiInfo from capabilities — available on API 29+
+                val wifiInfo: WifiInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    caps.transportInfo as? WifiInfo
+                } else {
+                    null
+                }
+
+                if (wifiInfo != null) {
+                    val bssid = wifiInfo.bssid ?: ""
+                    // WifiInfo.ssid includes surrounding quotes — strip them
+                    val ssid  = wifiInfo.ssid?.replace("\"", "") ?: ""
+                    Log.d(TAG, "🔔 NetworkCallback.onCapabilitiesChanged BSSID=$bssid SSID=$ssid")
+                    // ← Delegate to the centralized check, passing LIVE bssid/ssid values
+                    wifiReceiver.checkNetworkAuthorization(
+                        this@WiFiMonitoringService,
+                        liveBssid = bssid,
+                        liveSsid  = ssid
+                    )
+                } else {
+                    // API < 29 or transportInfo unavailable — fall back to broadcast path
+                    Log.d(TAG, "🔔 NetworkCallback.onCapabilitiesChanged (no WifiInfo) — fallback check")
+                    wifiReceiver.checkNetworkAuthorization(this@WiFiMonitoringService)
+                }
+            }
+
+            // ← WiFi network was lost — existing WiFi-off breach logic stays in
+            //   ScreenAndWiFiReceiver / SixSignalMonitor (WIFI_STATE_CHANGED_ACTION).
+            //   This override is here only so the callback object is defined completely.
+            override fun onLost(network: Network) {
+                Log.d(TAG, "🔔 NetworkCallback.onLost — WiFi lost event (handled by broadcast receiver)")
+            }
+        }
+
+        try {
+            connectivityManager.registerNetworkCallback(request, networkCallback!!)
+            isNetworkCallbackRegistered = true
+            Log.d(TAG, "✅ NetworkCallback registered for TRANSPORT_WIFI")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register NetworkCallback: ${e.message}")
+        }
+    }
+
+    // ← FIX (CAUSE 2): Safe unregister with null + flag guard
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback
+        if (cb != null && isNetworkCallbackRegistered) {
+            try {
+                connectivityManager.unregisterNetworkCallback(cb)
+                isNetworkCallbackRegistered = false
+                networkCallback = null
+                Log.d(TAG, "✅ NetworkCallback unregistered")
+            } catch (e: Exception) {
+                Log.w(TAG, "NetworkCallback unregister failed: ${e.message}")
+            }
+        }
+    }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
@@ -303,7 +420,7 @@ class WiFiMonitoringService : Service() {
      * setReferenceCounted(false) prevents a crash if acquire() is called twice
      * (e.g., ACTION_HEARTBEAT and WIFI_OFF_BREACH arrive close together).
      */
-    private fun acquireTimedWakeLock() {
+    internal fun acquireTimedWakeLock() {
         try {
             val wl = powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,

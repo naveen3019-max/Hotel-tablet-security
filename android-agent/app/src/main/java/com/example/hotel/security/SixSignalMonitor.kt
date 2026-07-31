@@ -18,6 +18,12 @@ import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+// ← FIX (CAUSE 1): Need these to check location permission and services
+import android.Manifest
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 
 class SixSignalMonitor(private val context: Context) {
     
@@ -382,38 +388,112 @@ class SixSignalMonitor(private val context: Context) {
         }
     }
 
-    // ← Check if current network matches authorized network periodically
+    // ← FIX (CAUSE 1 + CAUSE 2): Periodic fallback check (15 s heartbeat path).
+    //   NetworkCallback is the PRIMARY trigger (fast, event-driven). This runs as a
+    //   backup every 10 s via performSecurityCheck() to catch any missed events.
     private fun checkWrongNetwork() {
         val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
         val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
-        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
-        
-        if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) return
-        
+        val authorizedSsid  = prefs.getString("authorized_ssid",  "") ?: ""
+
+        if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) {
+            Log.d(TAG, "checkWrongNetwork: no authorized network saved — skipping")
+            return
+        }
+
+        // ← FIX (CAUSE 1): On Android 10+, WifiInfo.getSSID()/getBSSID() return junk
+        //   ("<unknown ssid>" / "02:00:00:00:00:00") unless BOTH conditions hold:
+        //     (a) ACCESS_FINE_LOCATION is granted at RUNTIME
+        //     (b) Location services are ENABLED
+        //   Without this check the SSID fallback silently passes on EVERY network
+        //   switch because currentSsid is always "<unknown ssid>".
+        if (!isLocationPermissionGranted()) {
+            Log.e(TAG,
+                "⚠️ WIFI IDENTITY UNAVAILABLE — ACCESS_FINE_LOCATION not granted. " +
+                "Cannot verify authorized network. Triggering degraded-state breach.")
+            triggerBreach(
+                "Cannot verify network identity — location permission denied",
+                rssi = -127
+            )
+            return
+        }
+        if (!isLocationEnabled()) {
+            Log.e(TAG,
+                "⚠️ WIFI IDENTITY UNAVAILABLE — Location services are OFF. " +
+                "Cannot verify authorized network. Triggering degraded-state breach.")
+            triggerBreach(
+                "Cannot verify network identity — location services disabled",
+                rssi = -127
+            )
+            return
+        }
+
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (!wifiManager.isWifiEnabled) return
-        
+
+        @Suppress("DEPRECATION")
         val info = wifiManager.connectionInfo ?: return
-        
+
+        @Suppress("DEPRECATION")
         val currentBssid = info.bssid ?: ""
-        val currentSsid = info.ssid?.replace("\"", "") ?: ""
-        
+        @Suppress("DEPRECATION")
+        val currentSsid  = info.ssid?.replace("\"", "") ?: ""
+
+        Log.d(TAG, "checkWrongNetwork: BSSID=$currentBssid SSID=$currentSsid " +
+                   "authorized BSSID=$authorizedBssid SSID=$authorizedSsid")
+
         val isPrivacyMac = currentBssid == "02:00:00:00:00:00"
-        
-        // 1. If we have a valid authorized BSSID and a valid current BSSID, compare them
+
+        // 1. Compare BSSID if available and not MAC-randomized
         if (authorizedBssid.isNotEmpty() && !isPrivacyMac && currentBssid.isNotEmpty()) {
             if (currentBssid != authorizedBssid) {
+                Log.e(TAG, "🚨 Wrong BSSID: $currentBssid expected: $authorizedBssid")
                 triggerBreach("Wrong network: $currentBssid expected: $authorizedBssid", rssi = -127)
             }
             return
         }
-        
-        // 2. Fallback to SSID comparison (used if BSSID is unavailable, randomized, or not saved)
+
+        // 2. Fallback to SSID comparison.
+        //    ← FIX (CAUSE 1): currentSsid is only trusted here because we have already
+        //      confirmed location permission + services are ON above. If they were off,
+        //      currentSsid would be "<unknown ssid>" even on the authorized network and
+        //      we would have returned early with a degraded-state breach instead.
         if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != "<unknown ssid>") {
             if (currentSsid != authorizedSsid) {
+                Log.e(TAG, "🚨 Wrong SSID: $currentSsid expected: $authorizedSsid")
                 triggerBreach("Wrong network: $currentSsid expected: $authorizedSsid", rssi = -127)
             }
+        } else if (currentSsid == "<unknown ssid>") {
+            // ← FIX (CAUSE 1): We have permissions but Android still returned junk.
+            //   Possible brief handoff window — log and wait for next NetworkCallback.
+            Log.w(TAG,
+                "⚠️ SSID still '<unknown ssid>' even with location permission — " +
+                "possible brief handoff window. NetworkCallback will catch the real value.")
         }
+    }
+
+    // ← FIX (CAUSE 1): Centralised helpers used by checkWrongNetwork().
+    //   Mirrors the same helpers in ScreenAndWiFiReceiver so both code paths apply
+    //   the same guard without duplicating the platform-version logic.
+    private fun isLocationPermissionGranted(): Boolean {
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) Log.w(TAG, "ACCESS_FINE_LOCATION NOT granted")
+        return granted
+    }
+
+    private fun isLocationEnabled(): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val enabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lm.isLocationEnabled
+        } else {
+            @Suppress("DEPRECATION")
+            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+            lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+        if (!enabled) Log.w(TAG, "Location services are DISABLED")
+        return enabled
     }
 
     private fun getWifiInfo(): WifiData {
