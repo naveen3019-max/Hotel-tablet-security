@@ -159,6 +159,7 @@ class KioskService : Service() {
                 try {
                     heartbeatWakeLock.acquire(35_000L)
                     try {
+                        ensureAuthorizedNetworkSaved()
                         val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
                         val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
                         val roomId = prefs.getString("room_id", "UNKNOWN")!!
@@ -603,6 +604,63 @@ class KioskService : Service() {
         return lastKnownRssi
     }
 
+    private fun ensureAuthorizedNetworkSaved() {
+        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val existing = prefs.getString("authorized_ssid", "")
+        if (!existing.isNullOrEmpty()) return
+        
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (!wifiManager.isWifiEnabled) return
+        
+        var ssid = ""
+        var bssid = ""
+        
+        try {
+            @Suppress("DEPRECATION")
+            val info = wifiManager.connectionInfo
+            @Suppress("DEPRECATION")
+            ssid = info?.ssid?.replace("\"", "")?.trim() ?: ""
+            @Suppress("DEPRECATION")
+            bssid = info?.bssid ?: ""
+        } catch (e: Exception) {
+            Log.w("KioskService", "connectionInfo failed: $e")
+        }
+        
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                val net = cm.activeNetwork
+                val caps = net?.let { cm.getNetworkCapabilities(it) }
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val transport = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: false
+                    if (transport) {
+                        @Suppress("DEPRECATION")
+                        val info = wifiManager.connectionInfo
+                        @Suppress("DEPRECATION")
+                        ssid = info?.ssid?.replace("\"", "")?.trim() ?: ""
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("KioskService", "CM fallback failed: $e")
+            }
+        }
+        
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
+            Log.w("KioskService", "Cannot read SSID for auth network")
+            return
+        }
+        
+        val finalBssid = if (bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
+        
+        prefs.edit().apply {
+            putString("authorized_ssid", ssid)
+            putString("authorized_bssid", finalBssid)
+            apply()
+        }
+        
+        Log.i("KioskService", "✅ Auth network saved in heartbeat: SSID='$ssid' BSSID='$finalBssid'")
+    }
+
     // Call this once on first start AND after each heartbeat
     private fun scheduleNextHeartbeat() {
         val intent = Intent(this, KioskService::class.java).apply {
@@ -612,13 +670,14 @@ class KioskService : Service() {
             this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        // setExactAndAllowWhileIdle: fires even during Doze
-        // ELAPSED_REALTIME_WAKEUP: wakes CPU if asleep
-        alarmManager.setExactAndAllowWhileIdle(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS,
-            pendingIntent
-        )
+        
+        val triggerAt = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val alarmInfo = AlarmManager.AlarmClockInfo(triggerAt, pendingIntent)
+            alarmManager.setAlarmClock(alarmInfo, pendingIntent)
+        } else {
+            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        }
     }
 
     private fun startWatchdog(deviceId: String, roomId: String, targetBssid: String, auth: String) {

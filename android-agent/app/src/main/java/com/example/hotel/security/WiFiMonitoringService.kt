@@ -172,6 +172,7 @@ class WiFiMonitoringService : Service() {
             ACTION_HEARTBEAT -> {
                 Log.d(TAG, "⏰ AlarmManager heartbeat fired")
                 acquireTimedWakeLock()
+                ensureAuthorizedNetworkSaved()
                 sixSignalMonitor.forceImmediateCheck()
                 scheduleNextAlarm()
             }
@@ -370,8 +371,15 @@ class WiFiMonitoringService : Service() {
             this, ALARM_REQUEST_CODE, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val triggerAt = SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS
-        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+        
+        val triggerAt = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MS
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val alarmInfo = AlarmManager.AlarmClockInfo(triggerAt, pendingIntent)
+            am.setAlarmClock(alarmInfo, pendingIntent)
+        } else {
+            am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        }
         Log.d(TAG, "⏰ Next heartbeat alarm in ${HEARTBEAT_INTERVAL_MS / 1000}s")
     }
 

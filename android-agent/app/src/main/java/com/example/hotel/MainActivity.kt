@@ -75,6 +75,13 @@ class MainActivity : AppCompatActivity() {
             android.Manifest.permission.NEARBY_WIFI_DEVICES,
             android.Manifest.permission.POST_NOTIFICATIONS
         ))
+        
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val am = getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            if (!am.canScheduleExactAlarms()) {
+                Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).also { startActivity(it) }
+            }
+        }
 
         // STEALTH MODE SAFETY NET: If the device is already provisioned but
         // the alias was somehow re-enabled (e.g. after ADB enable or an OEM
