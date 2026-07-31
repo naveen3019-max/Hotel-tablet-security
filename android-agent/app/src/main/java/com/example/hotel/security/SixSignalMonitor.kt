@@ -422,77 +422,6 @@ class SixSignalMonitor(private val context: Context) {
         }
     }
 
-        // â† FIX (CAUSE 1): On Android 10+, WifiInfo.getSSID()/getBSSID() return junk
-        //   ("<unknown ssid>" / "02:00:00:00:00:00") unless BOTH conditions hold:
-        //     (a) ACCESS_FINE_LOCATION is granted at RUNTIME
-        //     (b) Location services are ENABLED
-        //   Without this check the SSID fallback silently passes on EVERY network
-        //   switch because currentSsid is always "<unknown ssid>".
-        if (!isLocationPermissionGranted()) {
-            Log.e(TAG,
-                "âš ï¸ WIFI IDENTITY UNAVAILABLE â€” ACCESS_FINE_LOCATION not granted. " +
-                "Cannot verify authorized network. Triggering degraded-state breach.")
-            triggerBreach(
-                "Cannot verify network identity â€” location permission denied",
-                rssi = -127
-            )
-            return
-        }
-        if (!isLocationEnabled()) {
-            Log.e(TAG,
-                "âš ï¸ WIFI IDENTITY UNAVAILABLE â€” Location services are OFF. " +
-                "Cannot verify authorized network. Triggering degraded-state breach.")
-            triggerBreach(
-                "Cannot verify network identity â€” location services disabled",
-                rssi = -127
-            )
-            return
-        }
-
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        if (!wifiManager.isWifiEnabled) return
-
-        @Suppress("DEPRECATION")
-        val info = wifiManager.connectionInfo ?: return
-
-        @Suppress("DEPRECATION")
-        val currentBssid = info.bssid ?: ""
-        @Suppress("DEPRECATION")
-        val currentSsid  = info.ssid?.replace("\"", "") ?: ""
-
-        Log.d(TAG, "checkWrongNetwork: BSSID=$currentBssid SSID=$currentSsid " +
-                   "authorized BSSID=$authorizedBssid SSID=$authorizedSsid")
-
-        val isPrivacyMac = currentBssid == "02:00:00:00:00:00"
-
-        // 1. Compare BSSID if available and not MAC-randomized
-        if (authorizedBssid.isNotEmpty() && !isPrivacyMac && currentBssid.isNotEmpty()) {
-            if (currentBssid != authorizedBssid) {
-                Log.e(TAG, "ðŸš¨ Wrong BSSID: $currentBssid expected: $authorizedBssid")
-                triggerBreach("Wrong network: $currentBssid expected: $authorizedBssid", rssi = -127)
-            }
-            return
-        }
-
-        // 2. Fallback to SSID comparison.
-        //    â† FIX (CAUSE 1): currentSsid is only trusted here because we have already
-        //      confirmed location permission + services are ON above. If they were off,
-        //      currentSsid would be "<unknown ssid>" even on the authorized network and
-        //      we would have returned early with a degraded-state breach instead.
-        if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != "<unknown ssid>") {
-            if (currentSsid != authorizedSsid) {
-                Log.e(TAG, "ðŸš¨ Wrong SSID: $currentSsid expected: $authorizedSsid")
-                triggerBreach("Wrong network: $currentSsid expected: $authorizedSsid", rssi = -127)
-            }
-        } else if (currentSsid == "<unknown ssid>") {
-            // â† FIX (CAUSE 1): We have permissions but Android still returned junk.
-            //   Possible brief handoff window â€” log and wait for next NetworkCallback.
-            Log.w(TAG,
-                "âš ï¸ SSID still '<unknown ssid>' even with location permission â€” " +
-                "possible brief handoff window. NetworkCallback will catch the real value.")
-        }
-    }
-
     // â† FIX (CAUSE 1): Centralised helpers used by checkWrongNetwork().
     //   Mirrors the same helpers in ScreenAndWiFiReceiver so both code paths apply
     //   the same guard without duplicating the platform-version logic.
@@ -555,6 +484,4 @@ class SixSignalMonitor(private val context: Context) {
         firstWifiLossTime = 0L
     }
 }
-
-
 
