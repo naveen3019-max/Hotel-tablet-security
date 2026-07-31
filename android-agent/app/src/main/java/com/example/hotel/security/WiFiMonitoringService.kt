@@ -175,6 +175,23 @@ class WiFiMonitoringService : Service() {
                 scheduleNextAlarm()
             }
 
+            "WRONG_NETWORK_BREACH" -> {
+                // ← NEW: Instant breach for wrong network
+                val reason = intent.getStringExtra("BREACH_REASON") ?: "Wrong WiFi network detected"
+                val rssi = intent.getIntExtra("FORCED_RSSI", -127)
+                
+                Log.e(TAG, "🚨 WRONG NETWORK BREACH: $reason")
+                
+                acquireTimedWakeLock()
+                scheduleNextAlarm()
+                
+                sixSignalMonitor.triggerBreach(
+                    reason = reason,
+                    rssi = rssi,
+                    isImmediate = true
+                )
+            }
+
             else -> {
                 // ── Normal service start (boot, first launch, process restart) ──
                 if (!isServiceRunning) {

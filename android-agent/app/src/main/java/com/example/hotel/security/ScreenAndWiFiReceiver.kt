@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.net.NetworkInfo // ← NEW: for network state checking
 import java.net.URL
 import java.net.HttpURLConnection
 import org.json.JSONObject
@@ -32,6 +33,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+            addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION) // ← NEW: listen for network change
             addAction(ConnectivityManager.CONNECTIVITY_ACTION)
         }
         context.registerReceiver(this, filter)
@@ -104,6 +106,15 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                         }
                     }
                 }
+                WifiManager.NETWORK_STATE_CHANGED_ACTION -> {
+                    // ← NEW: handle when device connects to any network
+                    val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiManager.EXTRA_NETWORK_INFO)
+                    if (networkInfo?.state == NetworkInfo.State.CONNECTED) {
+                        // WiFi connected to a network
+                        // Check if it is the authorized one
+                        checkNetworkAuthorization(context)
+                    }
+                }
                 ConnectivityManager.CONNECTIVITY_ACTION -> {
                     val noConnectivity = intent.getBooleanExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, false)
                     if (noConnectivity) {
@@ -139,6 +150,73 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
             if (wl.isHeld) {
                 wl.release()
             }
+        }
+    }
+
+    // ← NEW: check if connected network is the authorized one
+    private fun checkNetworkAuthorization(context: Context) {
+        val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        
+        // ← Get authorized BSSID saved during tablet registration
+        val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
+        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
+        
+        // ← If no authorized network saved, do not breach (not yet provisioned)
+        if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) {
+            Log.d(TAG, "No authorized network saved — skipping check")
+            return
+        }
+        
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        
+        if (!wifiManager.isWifiEnabled) return
+        
+        // ← Get current network info
+        val currentBssid = try {
+            wifiManager.connectionInfo?.bssid ?: ""
+        } catch (e: Exception) { "" }
+        
+        val currentSsid = try {
+            wifiManager.connectionInfo?.ssid?.replace("\"", "") ?: ""
+        } catch (e: Exception) { "" }
+        
+        Log.d(TAG, "Network check: current=$currentBssid/$currentSsid authorized=$authorizedBssid/$authorizedSsid")
+        
+        // ← Skip Android privacy MAC: 02:00:00:00:00:00 = MAC randomized
+        val isPrivacyMac = currentBssid == "02:00:00:00:00:00"
+        
+        if (isPrivacyMac) {
+            // ← Fall back to SSID comparison
+            if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != authorizedSsid && currentSsid != "<unknown ssid>") {
+                Log.e(TAG, "🚨 UNAUTHORIZED NETWORK! Expected SSID: $authorizedSsid Got: $currentSsid")
+                triggerNetworkBreach(context, "Wrong WiFi network: $currentSsid")
+            }
+            return
+        }
+        
+        // ← Compare BSSID if available
+        if (authorizedBssid.isNotEmpty() && currentBssid.isNotEmpty() && currentBssid != authorizedBssid) {
+            Log.e(TAG, "🚨 UNAUTHORIZED NETWORK! Expected: $authorizedBssid Got: $currentBssid")
+            triggerNetworkBreach(context, "Wrong WiFi network: $currentBssid")
+            return
+        }
+        
+        Log.d(TAG, "✅ Authorized network confirmed")
+    }
+
+    // ← NEW: trigger breach for wrong network
+    private fun triggerNetworkBreach(context: Context, reason: String) {
+        // ← Start service with wrong network breach
+        val serviceIntent = Intent(context, WiFiMonitoringService::class.java).apply {
+            action = "WRONG_NETWORK_BREACH"
+            putExtra("BREACH_REASON", reason)
+            putExtra("IMMEDIATE_BREACH", true)
+            putExtra("FORCED_RSSI", -127)
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(serviceIntent)
+        } else {
+            context.startService(serviceIntent)
         }
     }
 

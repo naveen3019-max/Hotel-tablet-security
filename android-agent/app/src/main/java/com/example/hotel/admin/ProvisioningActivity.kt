@@ -16,6 +16,7 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.example.hotel.data.AgentRepository
 import com.example.hotel.data.RegisterRequest
+import android.net.wifi.WifiManager // ← NEW: for authorized network
 import com.example.hotel.security.WiFiMonitoringService  // ← NEW: start WiFi monitoring
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -328,6 +329,9 @@ class ProvisioningActivity : AppCompatActivity() {
                 
                 android.util.Log.d("Provisioning", "Settings saved, registration complete!")
                 
+                // ← NEW: Save authorized WiFi network
+                saveAuthorizedNetwork()
+                
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
                         this@ProvisioningActivity,
@@ -478,5 +482,33 @@ class ProvisioningActivity : AppCompatActivity() {
             startService(kioskIntent)
         }
         Log.i(TAG, "✅ KioskService started")
+    }
+
+    // ← NEW: Save authorized WiFi network
+    private fun saveAuthorizedNetwork() {
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        
+        if (!wifiManager.isWifiEnabled) return
+        
+        val info = wifiManager.connectionInfo ?: return
+        
+        val bssid = info.bssid ?: ""
+        val ssid = info.ssid?.replace("\"", "") ?: ""
+        
+        // ← Skip privacy MAC
+        val finalBssid = if (bssid == "02:00:00:00:00:00") "" else bssid
+        
+        if (finalBssid.isEmpty() && ssid.isEmpty()) {
+            Log.w(TAG, "Cannot save authorized network — no WiFi info available")
+            return
+        }
+        
+        getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit().apply {
+            putString("authorized_bssid", finalBssid)
+            putString("authorized_ssid", ssid)
+            apply()
+        }
+        
+        Log.i(TAG, "✅ Authorized network saved: BSSID=$finalBssid SSID=$ssid")
     }
 }

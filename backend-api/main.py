@@ -356,6 +356,7 @@ class Breach(BaseModel):
     rssi: int = -127
     breachTimestamp: Optional[int] = None
     ts: Optional[datetime] = None
+    message: Optional[str] = None  # ← ADD
 
 class Battery(BaseModel):
     deviceId: str
@@ -1089,6 +1090,8 @@ async def alert_breach(
         except Exception as h_err:
             logger.error(f"hotel_id error: {h_err}")
 
+        breach_message = b.message or "WiFi disabled on device"  # ← ADD
+
         # ← Store alert (critical — raise on failure)
         try:
             result = await alerts_collection.insert_one({
@@ -1096,7 +1099,7 @@ async def alert_breach(
                 "roomId": b.roomId,
                 "type": "breach",
                 "severity": "critical",
-                "message": "WiFi disabled",
+                "message": breach_message,  # ← UPDATE
                 "rssi": rssi,
                 "ts": breach_time,
                 "acknowledged": False,
@@ -1135,7 +1138,7 @@ async def alert_breach(
                 "deviceId": b.deviceId,
                 "roomId": b.roomId,
                 "rssi": rssi,
-                "message": "WiFi disabled",
+                "message": breach_message,  # ← UPDATE
                 "timestamp": ts_str
             }, hotel_id=hotel_id)
 

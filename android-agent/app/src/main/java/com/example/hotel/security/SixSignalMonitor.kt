@@ -163,12 +163,12 @@ class SixSignalMonitor(private val context: Context) {
         
         // ← Call fireBreach directly
         fireBreach(rssi = if (rssi > -10) -127 
-                          else rssi)
+                          else rssi, reason = reason)
     }
 
     private val breachLock = Mutex()
 
-    fun fireBreach(rssi: Int = -127) {
+    fun fireBreach(rssi: Int = -127, reason: String = "WiFi disabled on device") {
         val actualRssi = rssi // trust caller
         Log.d(TAG, "fireBreach() called with rssi=$rssi")
         
@@ -198,13 +198,13 @@ class SixSignalMonitor(private val context: Context) {
                 return
             }
             Log.d(TAG, "fireBreach: found token in alternate prefs")
-            executeBreachPost(deviceIdVal, roomIdVal, altToken, rssi)
+            executeBreachPost(deviceIdVal, roomIdVal, altToken, rssi, reason)
         } else {
-            executeBreachPost(deviceIdVal, roomIdVal, freshToken, rssi)
+            executeBreachPost(deviceIdVal, roomIdVal, freshToken, rssi, reason)
         }
     }
 
-    private fun executeBreachPost(deviceId: String, roomId: String, token: String, rssi: Int) {
+    private fun executeBreachPost(deviceId: String, roomId: String, token: String, rssi: Int, reason: String) {
         Thread {
             
             val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
@@ -237,6 +237,8 @@ class SixSignalMonitor(private val context: Context) {
                             put("deviceId", deviceId)
                             put("roomId", roomId)
                             put("rssi", rssi)
+                            // ← ADD message field
+                            put("message", reason)
                         }
                         OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
                         val code = conn.responseCode
@@ -372,7 +374,42 @@ class SixSignalMonitor(private val context: Context) {
                 Companion.isBreachActive = false
                 Log.d(TAG, "WiFi restored")
             }
+            
+            // ← NEW: Check authorized network
+            checkWrongNetwork()
+            
             Log.d(TAG, "WiFi OK RSSI:${wifiData.rssi}")
+        }
+    }
+
+    // ← Check if current network matches authorized network periodically
+    private fun checkWrongNetwork() {
+        val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
+        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
+        
+        if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) return
+        
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (!wifiManager.isWifiEnabled) return
+        
+        val info = wifiManager.connectionInfo ?: return
+        
+        val currentBssid = info.bssid ?: ""
+        val currentSsid = info.ssid?.replace("\"", "") ?: ""
+        
+        val isPrivacyMac = currentBssid == "02:00:00:00:00:00"
+        
+        if (isPrivacyMac) {
+            if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() &&
+                currentSsid != authorizedSsid && currentSsid != "<unknown ssid>") {
+                triggerBreach("Wrong network: $currentSsid expected: $authorizedSsid", rssi = -127)
+            }
+            return
+        }
+        
+        if (authorizedBssid.isNotEmpty() && currentBssid.isNotEmpty() && currentBssid != authorizedBssid) {
+            triggerBreach("Wrong network: $currentBssid expected: $authorizedBssid", rssi = -127)
         }
     }
 
