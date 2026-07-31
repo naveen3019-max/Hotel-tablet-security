@@ -1060,22 +1060,28 @@ async def alert_breach(
             logger.warning(f"Timestamp error: {ts_err}")
             breach_time = get_utc_naive()
 
-        # ← Prevent duplicate alerts if already breached
+        breach_message = b.message or "WiFi disabled on device"  # ← ADD
+
+        # ← Prevent duplicate alerts if already breached WITH THE SAME MESSAGE
         if current_device.get("status") == StatusEnum.breach:
-            logger.info(f"Device {b.deviceId} is already breached. Skipping new alert creation.")
-            # We still want to update the device's last_seen and RSSI
-            try:
-                await devices_collection.update_one(
-                    {"_id": b.deviceId},
-                    {"$set": {
-                        "rssi": rssi,
-                        "last_seen": get_utc_naive()
-                    }}
-                )
-            except Exception as upd_err:
-                logger.error(f"Device update: {upd_err}")
-                
-            return {"ok": True, "duplicate": True}
+            # Check the last alert message
+            last_alert = await alerts_collection.find_one(
+                {"deviceId": b.deviceId, "type": "breach"},
+                sort=[("ts", -1)]
+            )
+            if last_alert and last_alert.get("message") == breach_message:
+                logger.info(f"Device {b.deviceId} already breached with same message. Skipping.")
+                try:
+                    await devices_collection.update_one(
+                        {"_id": b.deviceId},
+                        {"$set": {
+                            "rssi": rssi,
+                            "last_seen": get_utc_naive()
+                        }}
+                    )
+                except Exception as upd_err:
+                    logger.error(f"Device update: {upd_err}")
+                return {"ok": True, "duplicate": True}
 
         # ← Get hotel_id safely
         hotel_id = "default"
@@ -1084,8 +1090,6 @@ async def alert_breach(
                 hotel_id = device.get("hotel_id", "default") or "default"
         except Exception as h_err:
             logger.error(f"hotel_id error: {h_err}")
-
-        breach_message = b.message or "WiFi disabled on device"  # ← ADD
 
         # ← Store alert (critical — raise on failure)
         try:
