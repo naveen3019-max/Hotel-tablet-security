@@ -256,14 +256,7 @@ async def monitor_device_heartbeats():
                 
                 # Only trigger breach for devices that were previously OK or offline
                 if current_status == StatusEnum.breach:
-                    last_alert_time = device.get("last_breach_alert_time")
-                    if last_alert_time:
-                        import datetime as dt
-                        if last_alert_time.tzinfo is not None:
-                            last_alert_time = last_alert_time.replace(tzinfo=None)
-                        gap = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - last_alert_time).total_seconds()
-                        if gap < 90:
-                            continue  # skip duplicate alert
+                    continue  # skip duplicate alert if already breached
 
                 if current_status in [StatusEnum.ok, StatusEnum.offline, StatusEnum.breach]:
                     # Ensure last_seen is timezone-aware for comparison
@@ -1067,20 +1060,22 @@ async def alert_breach(
             logger.warning(f"Timestamp error: {ts_err}")
             breach_time = get_utc_naive()
 
-        # ← Deduplication
-        try:
-            cutoff = datetime.now(pytz.utc).replace(tzinfo=None) - timedelta(seconds=30)
-            existing = await alerts_collection.find_one({
-                "deviceId": b.deviceId,
-                "type": "breach",
-                "ts": {"$gte": cutoff}
-            })
-            if existing:
-                logger.info(f"Duplicate skipped: {b.deviceId}")
-                return {"ok": True, "duplicate": True}
-        except Exception as dedup_err:
-            logger.error(f"Dedup error: {dedup_err}")
-            # Continue even if dedup fails
+        # ← Prevent duplicate alerts if already breached
+        if current_device.get("status") == StatusEnum.breach:
+            logger.info(f"Device {b.deviceId} is already breached. Skipping new alert creation.")
+            # We still want to update the device's last_seen and RSSI
+            try:
+                await devices_collection.update_one(
+                    {"_id": b.deviceId},
+                    {"$set": {
+                        "rssi": rssi,
+                        "last_seen": get_utc_naive()
+                    }}
+                )
+            except Exception as upd_err:
+                logger.error(f"Device update: {upd_err}")
+                
+            return {"ok": True, "duplicate": True}
 
         # ← Get hotel_id safely
         hotel_id = "default"
