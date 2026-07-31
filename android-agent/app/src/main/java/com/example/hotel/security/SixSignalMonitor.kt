@@ -393,13 +393,34 @@ class SixSignalMonitor(private val context: Context) {
     //   backup every 10 s via performSecurityCheck() to catch any missed events.
     private fun checkWrongNetwork() {
         val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
         val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
-        val authorizedSsid  = prefs.getString("authorized_ssid",  "") ?: ""
-
-        if (authorizedBssid.isEmpty() && authorizedSsid.isEmpty()) {
-            Log.d(TAG, "checkWrongNetwork: no authorized network saved â€” skipping")
+        
+        if (authorizedSsid.isEmpty() && authorizedBssid.isEmpty()) {
+            // <- Not provisioned yet
             return
         }
+        
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (!wifiManager.isWifiEnabled) return
+        
+        @Suppress("DEPRECATION")
+        val info = wifiManager.connectionInfo ?: return
+        
+        @Suppress("DEPRECATION")
+        val currentSsid = info.ssid?.replace("\"", "")?.trim() ?: ""
+        
+        @Suppress("DEPRECATION")
+        val currentBssid = info.bssid ?: ""
+        
+        if (currentSsid.isEmpty() || currentSsid == "<unknown ssid>") return
+        
+        // <- Check SSID mismatch
+        if (authorizedSsid.isNotEmpty() && currentSsid != authorizedSsid) {
+            Log.e(TAG, "🚨 WRONG NETWORK PERIODIC CHECK: Expected '$authorizedSsid' Got '$currentSsid'")
+            triggerBreach(reason = "Wrong WiFi: '$currentSsid' expected '$authorizedSsid'", rssi = -127)
+        }
+    }
 
         // â† FIX (CAUSE 1): On Android 10+, WifiInfo.getSSID()/getBSSID() return junk
         //   ("<unknown ssid>" / "02:00:00:00:00:00") unless BOTH conditions hold:
@@ -534,4 +555,5 @@ class SixSignalMonitor(private val context: Context) {
         firstWifiLossTime = 0L
     }
 }
+
 

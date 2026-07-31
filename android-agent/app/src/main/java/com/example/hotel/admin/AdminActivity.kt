@@ -1,4 +1,4 @@
-package com.example.hotel.admin
+﻿package com.example.hotel.admin
 
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
@@ -100,7 +100,8 @@ class AdminActivity : AppCompatActivity() {
             "Open Device Settings",
             "Start Calibration Tool",
             "Change Admin PIN",
-            "Exit Kiosk Mode (5 min)"
+            "Exit Kiosk Mode (5 min)",
+            "Update Authorized WiFi"
         )
         
         builder.setTitle("Admin Menu")
@@ -111,7 +112,12 @@ class AdminActivity : AppCompatActivity() {
                     2 -> startCalibration()
                     3 -> changePin()
                     4 -> exitKioskMode()
+                    5 -> updateAuthorizedNetwork()
                 }
+            }
+            .setNegativeButton("Cancel") { _, _ -> finish() }
+            .show()
+    }
             }
             .setNegativeButton("Cancel") { _, _ -> finish() }
             .show()
@@ -174,6 +180,42 @@ class AdminActivity : AppCompatActivity() {
         Toast.makeText(this, "Kiosk disabled for 5 minutes", Toast.LENGTH_LONG).show()
         finish()
     }
+
+    private fun updateAuthorizedNetwork() {
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        
+        @Suppress("DEPRECATION")
+        val info = wifiManager.connectionInfo ?: run {
+            Toast.makeText(this, "Not connected to WiFi", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        
+        @Suppress("DEPRECATION")
+        val ssid = info.ssid?.replace("\"", "") ?: ""
+        
+        @Suppress("DEPRECATION")
+        val bssid = info.bssid ?: ""
+        
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
+            Toast.makeText(this, "Cannot read WiFi name", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        
+        val finalBssid = if (bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
+        
+        getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit().apply {
+            putString("authorized_ssid", ssid)
+            putString("authorized_bssid", finalBssid)
+            putLong("authorized_network_saved_at", System.currentTimeMillis())
+            apply()
+        }
+        
+        Toast.makeText(this, "✅ Authorized network updated to:\n'$ssid'", Toast.LENGTH_LONG).show()
+        android.util.Log.i("Admin", "Authorized network updated: SSID=$ssid BSSID=$finalBssid")
+        finish()
+    }
     
     private fun hashPin(pin: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -181,3 +223,4 @@ class AdminActivity : AppCompatActivity() {
         return hash.joinToString("") { "%02x".format(it) }
     }
 }
+

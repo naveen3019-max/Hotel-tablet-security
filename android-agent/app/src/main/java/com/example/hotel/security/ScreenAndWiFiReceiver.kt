@@ -133,27 +133,74 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         context: Context,
         liveBssid: String? = null,
         liveSsid:  String? = null,
-        source:    String  = "unknown"  // â† DEBUG: identifies call origin in logcat
+        source:    String  = "unknown"
     ) {
-        Log.d(DBG, "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
-        Log.d(DBG, "checkNetworkAuthorization() called from='$source'")
+        val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
+        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
+        
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (!wifiManager.isWifiEnabled) return
+        
+        @Suppress("DEPRECATION")
+        val info = wifiManager.connectionInfo
+        @Suppress("DEPRECATION")
+        val currentBssid = info?.bssid ?: ""
+        @Suppress("DEPRECATION")
+        val currentSsid = info?.ssid?.replace("\"", "")?.trim() ?: ""
+        
+        Log.d(DBG, "Network auth check: current SSID='$currentSsid' BSSID='$currentBssid' | authorized SSID='$authorizedSsid' BSSID='$authorizedBssid'")
+        
+        // <- If no authorized network saved, save current network as authorized (first time setup)
+        if (authorizedSsid.isEmpty() && authorizedBssid.isEmpty()) {
+            if (currentSsid.isNotEmpty() && currentSsid != "<unknown ssid>") {
+                Log.i(DBG, "First connection — saving '$currentSsid' as authorized")
+                val finalBssid = if (currentBssid == "02:00:00:00:00:00" || currentBssid == "00:00:00:00:00:00") "" else currentBssid
+                prefs.edit().apply {
+                    putString("authorized_ssid", currentSsid)
+                    putString("authorized_bssid", finalBssid)
+                    putLong("authorized_network_saved_at", System.currentTimeMillis())
+                    apply()
+                }
+            }
+            return
+        }
+        
+        // <- Skip if current SSID unknown
+        if (currentSsid.isEmpty() || currentSsid == "<unknown ssid>") {
+            Log.w(DBG, "Current SSID unknown — skip check")
+            return
+        }
+        
+        val isPrivacyMac = currentBssid == "02:00:00:00:00:00" || currentBssid == "00:00:00:00:00:00"
+        
+        // <- PRIMARY CHECK: Compare SSID
+        if (authorizedSsid.isNotEmpty()) {
+            if (currentSsid != authorizedSsid) {
+                Log.e(DBG, "🚨 WRONG NETWORK! Expected SSID: '$authorizedSsid' Got: '$currentSsid'")
+                triggerNetworkBreach(context, "Wrong WiFi: connected to '$currentSsid' instead of '$authorizedSsid'")
+                return
+            } else {
+                Log.d(DBG, "✅ SSID matches authorized network '$currentSsid'")
+            }
+        }
+        
+        // <- SECONDARY CHECK: Compare BSSID
+        if (!isPrivacyMac && authorizedBssid.isNotEmpty() && currentBssid.isNotEmpty() && currentBssid != authorizedBssid) {
+            if (authorizedSsid.isEmpty()) {
+                Log.e(DBG, "🚨 WRONG NETWORK BSSID! Expected: '$authorizedBssid' Got: '$currentBssid'")
+                triggerNetworkBreach(context, "Wrong WiFi network detected")
+            } else {
+                Log.d(DBG, "BSSID different but SSID matches — likely same network different access point")
+            }
+            return
+        }
+        
+        Log.d(DBG, "✅ Authorized network OK")
+    }
 
-        // â† DEBUG: log SDK and targetSdk so we know which permission path applies
-        Log.d(DBG, "  SDK=${Build.VERSION.SDK_INT} targetSdk=34 (compileSdk=34)")
-
-        // â† DEBUG: log raw permission states
-        val fineGranted = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-        Log.d(DBG, "  ACCESS_FINE_LOCATION granted=$fineGranted")
-
-        val nearbyGranted: Boolean? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val g = ContextCompat.checkSelfPermission(
-                context, Manifest.permission.NEARBY_WIFI_DEVICES
-            ) == PackageManager.PERMISSION_GRANTED
-            Log.d(DBG, "  NEARBY_WIFI_DEVICES granted=$g (API>=33 path)")
-            g
-        } else {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Permission helpers else {
             Log.d(DBG, "  NEARBY_WIFI_DEVICES N/A (SDK ${Build.VERSION.SDK_INT} < 33)")
             null
         }
@@ -347,4 +394,5 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         } catch (e: Exception) { Log.e(TAG, "Recovery failed: ${e.message}") }
     }
 }
+
 

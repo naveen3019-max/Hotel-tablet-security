@@ -1,26 +1,26 @@
 ﻿package com.example.hotel.admin
 
-import android.content.ComponentName       // â† NEW: used to target MainActivityAlias
+import android.content.ComponentName       // Ã¢â€ Â NEW: used to target MainActivityAlias
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager   // â† NEW: COMPONENT_ENABLED_STATE_DISABLED
-import android.location.LocationManager    // â† FIX (CAUSE 1): check location services
+import android.content.pm.PackageManager   // Ã¢â€ Â NEW: COMPONENT_ENABLED_STATE_DISABLED
+import android.location.LocationManager    // Ã¢â€ Â FIX (CAUSE 1): check location services
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler                  // â† NEW: 3-second delay before icon hide
-import android.os.Looper                   // â† NEW: main-thread looper for Handler
+import android.os.Handler                  // Ã¢â€ Â NEW: 3-second delay before icon hide
+import android.os.Looper                   // Ã¢â€ Â NEW: main-thread looper for Handler
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat // â† FIX (CAUSE 1): runtime permission check
+import androidx.core.content.ContextCompat // Ã¢â€ Â FIX (CAUSE 1): runtime permission check
 import com.example.hotel.data.AgentRepository
 import com.example.hotel.data.RegisterRequest
-import android.Manifest                    // â† FIX (CAUSE 1): ACCESS_FINE_LOCATION
-import android.net.wifi.WifiManager // â† NEW: for authorized network
-import com.example.hotel.security.WiFiMonitoringService  // â† NEW: start WiFi monitoring
+import android.Manifest                    // Ã¢â€ Â FIX (CAUSE 1): ACCESS_FINE_LOCATION
+import android.net.wifi.WifiManager // Ã¢â€ Â NEW: for authorized network
+import com.example.hotel.security.WiFiMonitoringService  // Ã¢â€ Â NEW: start WiFi monitoring
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -65,12 +65,12 @@ class ProvisioningActivity : AppCompatActivity() {
             }
         }
 
-        // â† NEW: Ask the user to exempt this app from Doze battery optimisations.
-        // Hotel tablets run 24/7 â€” Doze mode would throttle heartbeats after ~2 minutes
+        // Ã¢â€ Â NEW: Ask the user to exempt this app from Doze battery optimisations.
+        // Hotel tablets run 24/7 Ã¢â‚¬â€ Doze mode would throttle heartbeats after ~2 minutes
         // of screen-off time, causing false BREACH/OFFLINE alerts on the dashboard.
         requestBatteryOptimizationExemption()
 
-        // â† FIX (NEARBY_WIFI_DEVICES): Request WiFi identity permissions at provisioning time.
+        // Ã¢â€ Â FIX (NEARBY_WIFI_DEVICES): Request WiFi identity permissions at provisioning time.
         //   On targetSdk=34 / API >= 33: NEARBY_WIFI_DEVICES is required to unmask WifiInfo.
         //   ACCESS_FINE_LOCATION is still required for API < 33 and some OEM ROMs.
         //   Both are logged separately so we can see which one is missing in logcat.
@@ -209,7 +209,7 @@ class ProvisioningActivity : AppCompatActivity() {
      *   dashboard emits false BREACH/OFFLINE alerts within minutes of screen-off.
      *
      * Why ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS and not a runtime permission?
-     *   There is no runtime permission for this â€” the user must explicitly grant it
+     *   There is no runtime permission for this Ã¢â‚¬â€ the user must explicitly grant it
      *   via the system settings dialog. We trigger that dialog here during one-time
      *   provisioning so an admin can approve it before handing the tablet to a room.
      *
@@ -265,18 +265,18 @@ class ProvisioningActivity : AppCompatActivity() {
         }
     }
     private fun requestBatteryOptimizationExemption() {
-        // Doze Mode was introduced in API 23 â€” no-op on older devices.
+        // Doze Mode was introduced in API 23 Ã¢â‚¬â€ no-op on older devices.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
 
         // If already exempt (e.g., MDM policy or previous grant) skip silently.
         if (pm.isIgnoringBatteryOptimizations(packageName)) {
-            Log.d(TAG, "âœ… Battery optimisation exemption already granted â€” no dialog needed")
+            Log.d(TAG, "Ã¢Å“â€¦ Battery optimisation exemption already granted Ã¢â‚¬â€ no dialog needed")
             return
         }
 
-        Log.d(TAG, "ðŸ”‹ Requesting battery optimisation exemption for $packageName")
+        Log.d(TAG, "Ã°Å¸â€â€¹ Requesting battery optimisation exemption for $packageName")
 
         // The URI must reference this package name exactly.
         // Without the URI, the Intent is rejected on most OEM ROMs (Samsung, Xiaomi, etc.).
@@ -343,7 +343,7 @@ class ProvisioningActivity : AppCompatActivity() {
                 // Register device with backend
                 android.util.Log.d("Provisioning", "Calling register API...")
                 val startTime = System.currentTimeMillis()
-                // â† FIXED: Verified hotelId is set to the staff-entered hotelUsername, not hardcoded "default"
+                // Ã¢â€ Â FIXED: Verified hotelId is set to the staff-entered hotelUsername, not hardcoded "default"
                 val registerResponse = repo.register(tempAuth, RegisterRequest(deviceId, roomId, hotelUsername, staffName))
                 val duration = (System.currentTimeMillis() - startTime) / 1000.0
                 android.util.Log.d("Provisioning", "Register response received in ${duration}s: $registerResponse")
@@ -377,7 +377,7 @@ class ProvisioningActivity : AppCompatActivity() {
                 
                 android.util.Log.d("Provisioning", "Settings saved, registration complete!")
                 
-                // â† FIX (CAUSE 1): Verify ACCESS_FINE_LOCATION + location services are ON
+                // Ã¢â€ Â FIX (CAUSE 1): Verify ACCESS_FINE_LOCATION + location services are ON
                 //   BEFORE calling saveAuthorizedNetwork(). Without location permission,
                 //   wifiManager.connectionInfo returns "<unknown ssid>" / "02:00:00:00:00:00"
                 //   which would silently save junk as the "authorized" network, making
@@ -402,11 +402,11 @@ class ProvisioningActivity : AppCompatActivity() {
                         !locationGranted -> "Location permission (ACCESS_FINE_LOCATION) is required."
                         else -> "Location services must be ON."
                     }
-                    Log.e(TAG, "🚨 Provisioning Blocked: $reason")
+                    Log.e(TAG, "ðŸš¨ Provisioning Blocked: $reason")
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
                             this@ProvisioningActivity,
-                            "Enable Location to complete registration — this is required to verify the hotel WiFi network.",
+                            "Enable Location to complete registration â€” this is required to verify the hotel WiFi network.",
                             Toast.LENGTH_LONG
                         ).show()
                         statusText.text = "Registration blocked: $reason"
@@ -415,30 +415,30 @@ class ProvisioningActivity : AppCompatActivity() {
                     // <- FIX: Return early so registration cannot be completed until Location is on
                     return@launch
                 } else {
-                    // Location permission + services are confirmed good â€” safe to save
+                    // Location permission + services are confirmed good Ã¢â‚¬â€ safe to save
                     saveAuthorizedNetwork()
                     getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
                         .putBoolean("authorized_network_unverified", false)
                         .apply()
-                    Log.i(TAG, "âœ… Authorized network saved with verified location data")
+                    Log.i(TAG, "Ã¢Å“â€¦ Authorized network saved with verified location data")
                 }
                 
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
                         this@ProvisioningActivity,
-                        "âœ… Device registered!\n" +
+                        "Ã¢Å“â€¦ Device registered!\n" +
                         "Device: $deviceId\nRoom: $roomId\n\n" +
                         "Security monitoring starting...",
                         Toast.LENGTH_LONG
                     ).show()
 
-                    statusText.text = "âœ… Registration complete! Starting security monitoring..."
+                    statusText.text = "Ã¢Å“â€¦ Registration complete! Starting security monitoring..."
 
-                    // â† Navigate to MainActivity after 2 seconds so the toast is readable.
+                    // Ã¢â€ Â Navigate to MainActivity after 2 seconds so the toast is readable.
                     //   MainActivity handles:
                     //   1. Runtime permission requests (location, notifications)
-                    //   2. startForegroundService(KioskService)  â€” after permission check
-                    //   3. hideAppIcon() safety net â€” hides launcher icon silently
+                    //   2. startForegroundService(KioskService)  Ã¢â‚¬â€ after permission check
+                    //   3. hideAppIcon() safety net Ã¢â‚¬â€ hides launcher icon silently
                     //
                     //   We do NOT call startMonitoringServices() here because the
                     //   location permission has NOT been granted yet at this point.
@@ -466,27 +466,27 @@ class ProvisioningActivity : AppCompatActivity() {
                 val errorMsg = when {
                     e is java.net.SocketTimeoutException -> {
                         "Timeout: Backend didn't respond in 60 seconds\n\nPossible causes:\n" +
-                        "â€¢ Render server is cold starting (can take 50+ seconds)\n" +
-                        "â€¢ Internet connection too slow\n" +
-                        "â€¢ Backend URL incorrect\n\nTry again in a moment."
+                        "Ã¢â‚¬Â¢ Render server is cold starting (can take 50+ seconds)\n" +
+                        "Ã¢â‚¬Â¢ Internet connection too slow\n" +
+                        "Ã¢â‚¬Â¢ Backend URL incorrect\n\nTry again in a moment."
                     }
                     e is java.net.UnknownHostException -> {
                         "Cannot reach server\n\nPossible causes:\n" +
-                        "â€¢ No internet connection\n" +
-                        "â€¢ Wrong backend URL\n" +
-                        "â€¢ DNS issue\n\nCheck internet and URL:\n$backendUrl"
+                        "Ã¢â‚¬Â¢ No internet connection\n" +
+                        "Ã¢â‚¬Â¢ Wrong backend URL\n" +
+                        "Ã¢â‚¬Â¢ DNS issue\n\nCheck internet and URL:\n$backendUrl"
                     }
                     e is java.net.ConnectException -> {
                         "Connection refused\n\nPossible causes:\n" +
-                        "â€¢ Backend is offline\n" +
-                        "â€¢ Wrong port number\n" +
-                        "â€¢ Firewall blocking\n\nBackend: $backendUrl"
+                        "Ã¢â‚¬Â¢ Backend is offline\n" +
+                        "Ã¢â‚¬Â¢ Wrong port number\n" +
+                        "Ã¢â‚¬Â¢ Firewall blocking\n\nBackend: $backendUrl"
                     }
                     e is javax.net.ssl.SSLException || e.message?.contains("SSL", ignoreCase = true) == true -> {
                         "SSL/HTTPS error\n\nPossible causes:\n" +
-                        "â€¢ Certificate issue\n" +
-                        "â€¢ Incorrect HTTPS URL\n" +
-                        "â€¢ System date/time wrong\n\nCheck device date/time"
+                        "Ã¢â‚¬Â¢ Certificate issue\n" +
+                        "Ã¢â‚¬Â¢ Incorrect HTTPS URL\n" +
+                        "Ã¢â‚¬Â¢ System date/time wrong\n\nCheck device date/time"
                     }
                     e.message?.contains("401", ignoreCase = true) == true || 
                     e.message?.contains("403", ignoreCase = true) == true -> {
@@ -515,9 +515,9 @@ class ProvisioningActivity : AppCompatActivity() {
         Toast.makeText(this, "Please complete device registration", Toast.LENGTH_SHORT).show()
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // â† NEW: Stealth / icon-hiding helpers
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // Ã¢â€ Â NEW: Stealth / icon-hiding helpers
+    // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     /**
      * Hides the app icon from the home screen launcher by DISABLING the
@@ -527,7 +527,7 @@ class ProvisioningActivity : AppCompatActivity() {
      *
      * WHY alias and not MainActivity directly?
      *   If we disabled MainActivity the system would kill the whole task and
-     *   all bound services.  The alias is just a pointer â€” disabling it only
+     *   all bound services.  The alias is just a pointer Ã¢â‚¬â€ disabling it only
      *   affects launcher discovery; services keep running unaffected.
      *
      * DONT_KILL_APP flag ensures no process restart happens.
@@ -535,14 +535,14 @@ class ProvisioningActivity : AppCompatActivity() {
     private fun hideAppIcon() {
         try {
             packageManager.setComponentEnabledSetting(
-                ComponentName(this, "${packageName}.MainActivityAlias"), // â† alias name
+                ComponentName(this, "${packageName}.MainActivityAlias"), // Ã¢â€ Â alias name
                 PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                PackageManager.DONT_KILL_APP   // â† services keep running
+                PackageManager.DONT_KILL_APP   // Ã¢â€ Â services keep running
             )
-            Log.i(TAG, "âœ… App icon hidden from launcher â€” running silently in background")
+            Log.i(TAG, "Ã¢Å“â€¦ App icon hidden from launcher Ã¢â‚¬â€ running silently in background")
         } catch (e: Exception) {
             // Never crash registration just because icon-hide failed
-            Log.e(TAG, "âš ï¸ Failed to hide app icon: ${e.message}")
+            Log.e(TAG, "Ã¢Å¡Â Ã¯Â¸Â Failed to hide app icon: ${e.message}")
         }
     }
 
@@ -577,20 +577,35 @@ class ProvisioningActivity : AppCompatActivity() {
 
     // â† NEW: Save authorized WiFi network
     private fun saveAuthorizedNetwork() {
+        val saved = trySaveNetwork()
+        if (!saved) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                trySaveNetwork()
+            }, 3000L)
+        }
+    }
+
+    private fun trySaveNetwork(): Boolean {
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (!wifiManager.isWifiEnabled) {
+            Log.w(TAG, "WiFi disabled â€” cannot save authorized network")
+            return false
+        }
         
-        if (!wifiManager.isWifiEnabled) return
+        @Suppress("DEPRECATION")
+        val info = wifiManager.connectionInfo
+        if (info == null) {
+            Log.w(TAG, "WiFi info null â€” cannot save")
+            return false
+        }
         
-        val info = wifiManager.connectionInfo ?: return
+        @Suppress("DEPRECATION")
+        val rawSsid = info.ssid ?: ""
+        val ssid = rawSsid.replace("\"", "").trim()
         
+        @Suppress("DEPRECATION")
         val bssid = info.bssid ?: ""
-        val ssid = info.ssid?.replace("\"", "") ?: ""
-        
-        // â† Skip privacy MAC
-        val finalBssid = if (bssid == "02:00:00:00:00:00") "" else bssid
-        
-        if (finalBssid.isEmpty() && ssid.isEmpty()) {
-            Log.w(TAG, "Cannot save authorized network â€” no WiFi info available")
+            Log.w(TAG, "Cannot save authorized network Ã¢â‚¬â€ no WiFi info available")
             return
         }
         
@@ -600,7 +615,8 @@ class ProvisioningActivity : AppCompatActivity() {
             apply()
         }
         
-        Log.i(TAG, "âœ… Authorized network saved: BSSID=$finalBssid SSID=$ssid")
+        Log.i(TAG, "Ã¢Å“â€¦ Authorized network saved: BSSID=$finalBssid SSID=$ssid")
     }
 }
+
 
