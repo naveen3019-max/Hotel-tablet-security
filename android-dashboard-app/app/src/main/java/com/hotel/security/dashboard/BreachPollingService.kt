@@ -42,6 +42,7 @@ class BreachPollingService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        BreachAlarmManager(this).createNotificationChannel() // ← ADDED
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -135,55 +136,12 @@ class BreachPollingService : Service() {
             
             // Show notification on main thread
             handler.post {
-                showBreachNotification(deviceId, roomId, message)
+                BreachAlarmManager(applicationContext).startBreachAlarm(alertId, deviceId, roomId, message)
             }
             
         } catch (e: Exception) {
             Log.e("PollingService", "Parse error: ${e.message}")
         }
-    }
-
-    private fun showBreachNotification(deviceId: String, roomId: String, message: String) {
-        val title = "🚨 BREACH - Room $roomId"
-        val body = "Device $deviceId: $message"
-        
-        // Intent to open app when tapped
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("deviceId", deviceId)
-            putExtra("roomId", roomId)
-        }
-        
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            System.currentTimeMillis().toInt(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
-            .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
-            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM))
-            .setColor(Color.RED)
-            .setColorized(true)
-            .setFullScreenIntent(pendingIntent, true)
-            .setLights(Color.RED, 1000, 500)
-            .build()
-        
-        NotificationManagerCompat.from(this).notify(
-            NOTIFICATION_ID_BASE + System.currentTimeMillis().toInt() % 1000,
-            notification
-        )
-        
-        Log.i("PollingService", "✅ Notification shown: $title")
     }
 
     private fun createNotificationChannel() {

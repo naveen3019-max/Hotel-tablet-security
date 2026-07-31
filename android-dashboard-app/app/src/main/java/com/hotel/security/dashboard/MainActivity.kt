@@ -22,6 +22,11 @@ import androidx.appcompat.app.AppCompatActivity
 import java.net.HttpURLConnection
 import java.net.URL
 import com.hotel.security.dashboard.R
+import androidx.appcompat.app.AlertDialog
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import android.widget.TextView
 
 class MainActivity : AppCompatActivity() {
 
@@ -182,6 +187,51 @@ class MainActivity : AppCompatActivity() {
         if (deviceId != null) {
             // Opened from breach notification
             webView.loadUrl(DASHBOARD_URL)
+            
+            val alertId = intent.getStringExtra("alertId")
+            val roomId = intent.getStringExtra("roomId") ?: ""
+            if (alertId != null) {
+                showBreachBanner(alertId, deviceId, roomId)
+            }
+        }
+    }
+    
+    private fun showBreachBanner(alertId: String, deviceId: String, roomId: String) {
+        val banner = layoutInflater.inflate(R.layout.breach_banner, null)
+        val dialog = AlertDialog.Builder(this)
+            .setView(banner)
+            .setCancelable(false)   // cannot dismiss without acknowledging
+            .create()
+
+        banner.findViewById<TextView>(R.id.breachDeviceText).text =
+            "🚨 BREACH: Room $roomId — $deviceId"
+        banner.findViewById<Button>(R.id.acknowledgeButton).setOnClickListener {
+            // Stop alarm + dismiss dialog
+            BreachAlarmManager(this).stopBreachAlarm()
+            dialog.dismiss()
+            // Call backend acknowledge
+            acknowledgeAlert(alertId)
+        }
+        dialog.show()
+    }
+
+    private fun acknowledgeAlert(alertId: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val token = getSharedPreferences("hotel_dashboard_prefs", MODE_PRIVATE)
+                    .getString("auth_token", null) ?: return@launch
+                // POST to backend acknowledge endpoint
+                val url = URL("https://hotel-tablet-security.onrender.com/api/alerts/$alertId/acknowledge")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Authorization", "Bearer $token")
+                    connectTimeout = 10_000; readTimeout = 10_000
+                }
+                Log.d("Ack", "Alert $alertId acknowledged → ${conn.responseCode}")
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.e("Ack", "Failed: ${e.message}")
+            }
         }
     }
     

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="#FFEBEB">
+    <TextView
+        android:id="@+id/breachDeviceText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#D32F2F"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textAlignment="center"/>
+    <Button
+        android:id="@+id/acknowledgeButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:backgroundTint="#D32F2F"
+        android:textColor="#FFFFFF"
+        android:text="✓ Acknowledge"/>
+</LinearLayout>

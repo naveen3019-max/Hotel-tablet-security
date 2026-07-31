@@ -1226,6 +1226,24 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
     
     return {"ok": True}
 
+# Acknowledge alert with JWT
+@app.post("/api/alerts/{alert_id}/acknowledge")
+async def acknowledge_alert(alert_id: str, current_user = Depends(get_current_user)):
+    from bson.objectid import ObjectId
+    try:
+        obj_id = ObjectId(alert_id)
+    except:
+        obj_id = alert_id
+        
+    await alerts_collection.update_one(
+        {"_id": obj_id},
+        {"$set": {"acknowledged": True, "acknowledgedAt": get_utc_naive(),
+                  "acknowledgedBy": current_user.get("sub")}}
+    )
+    # Stop sending repeat FCM for this alert
+    await broadcast_event("alert_acknowledged", {"alertId": alert_id}, hotel_id=current_user.get("hotel_id", "default"))
+    return {"status": "acknowledged"}
+
 # Battery alert with JWT
 @app.post("/api/alert/battery")
 async def alert_battery(b: Battery, device=Depends(get_current_device)):
