@@ -118,10 +118,6 @@ class AdminActivity : AppCompatActivity() {
             .setNegativeButton("Cancel") { _, _ -> finish() }
             .show()
     }
-            }
-            .setNegativeButton("Cancel") { _, _ -> finish() }
-            .show()
-    }
     
     private fun openWifiSettings() {
         try {
@@ -217,42 +213,6 @@ class AdminActivity : AppCompatActivity() {
         android.util.Log.i("Admin", "Authorized network updated: SSID=$ssid BSSID=$finalBssid")
         finish()
     }
-
-    private fun updateAuthorizedNetwork() {
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-        
-        @Suppress("DEPRECATION")
-        val info = wifiManager.connectionInfo ?: run {
-            Toast.makeText(this, "Not connected to WiFi", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-        
-        @Suppress("DEPRECATION")
-        val ssid = info.ssid?.replace("\"", "") ?: ""
-        
-        @Suppress("DEPRECATION")
-        val bssid = info.bssid ?: ""
-        
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
-            Toast.makeText(this, "Cannot read WiFi name", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-        
-        val finalBssid = if (bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
-        
-        getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit().apply {
-            putString("authorized_ssid", ssid)
-            putString("authorized_bssid", finalBssid)
-            putLong("authorized_network_saved_at", System.currentTimeMillis())
-            apply()
-        }
-        
-        Toast.makeText(this, "✅ Authorized network updated to:\n'$ssid'", Toast.LENGTH_LONG).show()
-        android.util.Log.i("Admin", "Authorized network updated: SSID=$ssid BSSID=$finalBssid")
-        finish()
-    }
     
     private fun hashPin(pin: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -260,4 +220,3 @@ class AdminActivity : AppCompatActivity() {
         return hash.joinToString("") { "%02x".format(it) }
     }
 }
-
