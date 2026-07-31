@@ -400,16 +400,19 @@ class SixSignalMonitor(private val context: Context) {
         
         val isPrivacyMac = currentBssid == "02:00:00:00:00:00"
         
-        if (isPrivacyMac) {
-            if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() &&
-                currentSsid != authorizedSsid && currentSsid != "<unknown ssid>") {
-                triggerBreach("Wrong network: $currentSsid expected: $authorizedSsid", rssi = -127)
+        // 1. If we have a valid authorized BSSID and a valid current BSSID, compare them
+        if (authorizedBssid.isNotEmpty() && !isPrivacyMac && currentBssid.isNotEmpty()) {
+            if (currentBssid != authorizedBssid) {
+                triggerBreach("Wrong network: $currentBssid expected: $authorizedBssid", rssi = -127)
             }
             return
         }
         
-        if (authorizedBssid.isNotEmpty() && currentBssid.isNotEmpty() && currentBssid != authorizedBssid) {
-            triggerBreach("Wrong network: $currentBssid expected: $authorizedBssid", rssi = -127)
+        // 2. Fallback to SSID comparison (used if BSSID is unavailable, randomized, or not saved)
+        if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != "<unknown ssid>") {
+            if (currentSsid != authorizedSsid) {
+                triggerBreach("Wrong network: $currentSsid expected: $authorizedSsid", rssi = -127)
+            }
         }
     }
 

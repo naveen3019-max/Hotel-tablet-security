@@ -185,20 +185,21 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         // ← Skip Android privacy MAC: 02:00:00:00:00:00 = MAC randomized
         val isPrivacyMac = currentBssid == "02:00:00:00:00:00"
         
-        if (isPrivacyMac) {
-            // ← Fall back to SSID comparison
-            if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != authorizedSsid && currentSsid != "<unknown ssid>") {
-                Log.e(TAG, "🚨 UNAUTHORIZED NETWORK! Expected SSID: $authorizedSsid Got: $currentSsid")
-                triggerNetworkBreach(context, "Wrong WiFi network: $currentSsid")
+        // 1. Compare BSSID if available
+        if (authorizedBssid.isNotEmpty() && !isPrivacyMac && currentBssid.isNotEmpty()) {
+            if (currentBssid != authorizedBssid) {
+                Log.e(TAG, "🚨 UNAUTHORIZED NETWORK! Expected: $authorizedBssid Got: $currentBssid")
+                triggerNetworkBreach(context, "Wrong WiFi network: $currentBssid")
             }
             return
         }
         
-        // ← Compare BSSID if available
-        if (authorizedBssid.isNotEmpty() && currentBssid.isNotEmpty() && currentBssid != authorizedBssid) {
-            Log.e(TAG, "🚨 UNAUTHORIZED NETWORK! Expected: $authorizedBssid Got: $currentBssid")
-            triggerNetworkBreach(context, "Wrong WiFi network: $currentBssid")
-            return
+        // 2. Fall back to SSID comparison
+        if (authorizedSsid.isNotEmpty() && currentSsid.isNotEmpty() && currentSsid != "<unknown ssid>") {
+            if (currentSsid != authorizedSsid) {
+                Log.e(TAG, "🚨 UNAUTHORIZED NETWORK! Expected SSID: $authorizedSsid Got: $currentSsid")
+                triggerNetworkBreach(context, "Wrong WiFi network: $currentSsid")
+            }
         }
         
         Log.d(TAG, "✅ Authorized network confirmed")

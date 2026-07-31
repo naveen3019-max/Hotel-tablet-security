@@ -82,6 +82,27 @@ class MainActivity : AppCompatActivity() {
         // The actual hide happens in ProvisioningActivity after registration;
         // this is just a belt-and-suspenders guard.
         hideAppIcon()
+
+        // ← NEW: Auto-save authorized WiFi if missing (migration for older provisioned devices)
+        val hotelPrefs = getSharedPreferences("hotel_prefs", android.content.Context.MODE_PRIVATE)
+        if (hotelPrefs.getString("authorized_ssid", "").isNullOrEmpty()) {
+            val wifiManager = applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            if (wifiManager.isWifiEnabled) {
+                val info = wifiManager.connectionInfo
+                if (info != null) {
+                    val bssid = info.bssid ?: ""
+                    val ssid = info.ssid?.replace("\"", "") ?: ""
+                    val finalBssid = if (bssid == "02:00:00:00:00:00") "" else bssid
+                    if (finalBssid.isNotEmpty() || ssid.isNotEmpty()) {
+                        hotelPrefs.edit()
+                            .putString("authorized_bssid", finalBssid)
+                            .putString("authorized_ssid", ssid)
+                            .apply()
+                        Log.i("HotelAgent", "Saved authorized network automatically: BSSID=$finalBssid SSID=$ssid")
+                    }
+                }
+            }
+        }
     }
     
     private fun performSecurityCheck() {
