@@ -1,4 +1,4 @@
-﻿package com.example.hotel.security
+package com.example.hotel.security
 
 import android.Manifest
 import android.app.AlarmManager
@@ -27,7 +27,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 
 /**
- * WiFiMonitoringService â€” Doze-proof hotel tablet security monitor.
+ * WiFiMonitoringService — Doze-proof hotel tablet security monitor.
  * targetSdkVersion = 34, compileSdkVersion = 34
  *
  * On API 33+ (targetSdk >= 33) NEARBY_WIFI_DEVICES (with neverForLocation) is the
@@ -46,7 +46,7 @@ class WiFiMonitoringService : Service() {
         getSystemService(Context.ALARM_SERVICE) as? AlarmManager
     }
 
-    // â† FIX (CAUSE 2): Primary network-change trigger
+    // ← FIX (CAUSE 2): Primary network-change trigger
     private val connectivityManager: ConnectivityManager by lazy {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
@@ -57,15 +57,15 @@ class WiFiMonitoringService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var isNetworkCallbackRegistered = false
 
-    // â† DEBUG: counter so logcat shows every onCapabilitiesChanged fire
+    // ← DEBUG: counter so logcat shows every onCapabilitiesChanged fire
     @Volatile private var capChangedCount = 0
 
     private var isServiceRunning = false
-    private val serviceStartTime = SystemClock.elapsedRealtime() // â† DEBUG: uptime tracking
+    private val serviceStartTime = SystemClock.elapsedRealtime() // ← DEBUG: uptime tracking
 
     companion object {
         private const val TAG = "WiFiMonitoringService"
-        private const val DBG = "WIFI_BREACH_DEBUG"          // â† DEBUG: unified tag
+        private const val DBG = "WIFI_BREACH_DEBUG"          // ← DEBUG: unified tag
         private const val CHANNEL_ID = "hotel_security_channel"
         private const val NOTIFICATION_ID = 1001
         const val ACTION_HEARTBEAT = "com.example.hotel.ACTION_HEARTBEAT"
@@ -83,13 +83,13 @@ class WiFiMonitoringService : Service() {
             val now = SystemClock.elapsedRealtime()
             if (now - lastBreachTime > BREACH_COOLDOWN) {
                 lastBreachTime = now
-                Log.e(TAG, "ðŸš¨ BREACH TRIGGERED: $reason")
+                Log.e(TAG, "🚨 BREACH TRIGGERED: $reason")
                 instance?.sixSignalMonitor?.triggerBreach(reason, rssi)
             }
         }
 
         fun onNetworkLost() {
-            Log.e(TAG, "Network Connectivity Lost â€” routing through 15s validation")
+            Log.e(TAG, "Network Connectivity Lost — routing through 15s validation")
             instance?.sixSignalMonitor?.forceImmediateCheck()
         }
 
@@ -104,42 +104,7 @@ class WiFiMonitoringService : Service() {
         }
     }
 
-    // â”€â”€ Service lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    private fun ensureAuthorizedNetworkSaved() {
-        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
-        val savedSsid = prefs.getString("authorized_ssid", "") ?: ""
-        val savedBssid = prefs.getString("authorized_bssid", "") ?: ""
-        
-        if (savedSsid.isNotEmpty()) {
-            Log.d(TAG, "Authorized network already saved: SSID=$savedSsid BSSID=$savedBssid")
-            return
-        }
-        
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        if (!wifiManager.isWifiEnabled) return
-        
-        @Suppress("DEPRECATION")
-        val info = wifiManager.connectionInfo ?: return
-        
-        @Suppress("DEPRECATION")
-        val ssid = info.ssid?.replace("\"", "")?.trim() ?: ""
-        
-        @Suppress("DEPRECATION")
-        val bssid = info.bssid ?: ""
-        val finalBssid = if (bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
-        
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") return
-        
-        prefs.edit().apply {
-            putString("authorized_ssid", ssid)
-            putString("authorized_bssid", finalBssid)
-            putLong("authorized_network_saved_at", System.currentTimeMillis())
-            apply()
-        }
-        
-        Log.i(TAG, "✅ Authorized network saved on service start: SSID=$ssid")
-    }
+    // ── Service lifecycle ─────────────────────────────────────────────────────
 
     private fun ensureAuthorizedNetworkSaved() {
         val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
@@ -179,11 +144,10 @@ class WiFiMonitoringService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureAuthorizedNetworkSaved()
-        ensureAuthorizedNetworkSaved()
         instance = this
 
-        // â† DEBUG: Service-alive heartbeat â€” gaps in logcat reveal OEM kills
-        Log.i(DBG, "â•â•â• WiFiMonitoringService.onCreate() â•â•â• " +
+        // ← DEBUG: Service-alive heartbeat — gaps in logcat reveal OEM kills
+        Log.i(DBG, "═══ WiFiMonitoringService.onCreate() ═══ " +
                 "SDK=${Build.VERSION.SDK_INT} targetSdk=34")
         logPermissionState("onCreate")
 
@@ -192,28 +156,28 @@ class WiFiMonitoringService : Service() {
 
         wifiReceiver = ScreenAndWiFiReceiver()
         wifiReceiver.register(this)
-        Log.d(TAG, "âœ… WiFi broadcast receiver registered")
+        Log.d(TAG, "✅ WiFi broadcast receiver registered")
 
-        // â† FIX + DEBUG: Register NetworkCallback â€” primary event-driven trigger
+        // ← FIX + DEBUG: Register NetworkCallback — primary event-driven trigger
         registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val uptimeSec = (SystemClock.elapsedRealtime() - serviceStartTime) / 1000
-        // â† DEBUG: Log every command so we see the service is alive
+        // ← DEBUG: Log every command so we see the service is alive
         Log.d(DBG, "onStartCommand action=${intent?.action} uptimeSec=$uptimeSec " +
                 "callbackRegistered=$isNetworkCallbackRegistered capChangedCount=$capChangedCount")
 
         when (intent?.action) {
             ACTION_HEARTBEAT -> {
-                Log.d(TAG, "â° AlarmManager heartbeat fired")
+                Log.d(TAG, "⏰ AlarmManager heartbeat fired")
                 acquireTimedWakeLock()
                 sixSignalMonitor.forceImmediateCheck()
                 scheduleNextAlarm()
             }
 
             "WIFI_OFF_BREACH" -> {
-                Log.e(TAG, "ðŸš¨ WiFi OFF broadcast received â€” forcing immediate breach check")
+                Log.e(TAG, "🚨 WiFi OFF broadcast received — forcing immediate breach check")
                 acquireTimedWakeLock()
                 val isImmediate = intent.getBooleanExtra("IMMEDIATE_BREACH", false)
                 val forcedRssi = intent.getIntExtra("FORCED_RSSI", -127)
@@ -224,7 +188,7 @@ class WiFiMonitoringService : Service() {
             "WRONG_NETWORK_BREACH" -> {
                 val reason = intent.getStringExtra("BREACH_REASON") ?: "Wrong WiFi network detected"
                 val rssi = intent.getIntExtra("FORCED_RSSI", -127)
-                Log.e(TAG, "ðŸš¨ WRONG NETWORK BREACH: $reason")
+                Log.e(TAG, "🚨 WRONG NETWORK BREACH: $reason")
                 acquireTimedWakeLock()
                 scheduleNextAlarm()
                 sixSignalMonitor.triggerBreach(reason = reason, rssi = rssi, isImmediate = true)
@@ -232,7 +196,7 @@ class WiFiMonitoringService : Service() {
 
             else -> {
                 if (!isServiceRunning) {
-                    Log.i(TAG, "ðŸš€ Starting hotel security monitoring")
+                    Log.i(TAG, "🚀 Starting hotel security monitoring")
                     isRunning = true
                     isServiceRunning = true
                     acquireTimedWakeLock()
@@ -247,14 +211,14 @@ class WiFiMonitoringService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.w(TAG, "Task removed â€” scheduling resurrection alarm")
+        Log.w(TAG, "Task removed — scheduling resurrection alarm")
         scheduleNextAlarm()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // â† DEBUG: Log stack-like breadcrumb when service is destroyed
-        Log.w(DBG, "â•â•â• WiFiMonitoringService.onDestroy() â•â•â• scheduling resurrection alarm")
+        // ← DEBUG: Log stack-like breadcrumb when service is destroyed
+        Log.w(DBG, "═══ WiFiMonitoringService.onDestroy() ═══ scheduling resurrection alarm")
 
         unregisterNetworkCallback()
 
@@ -272,12 +236,12 @@ class WiFiMonitoringService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // NetworkCallback â€” PRIMARY fast trigger for any WiFi network change
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────
+    // NetworkCallback — PRIMARY fast trigger for any WiFi network change
+    // ─────────────────────────────────────────────────────────────────────────
     private fun registerNetworkCallback() {
         if (isNetworkCallbackRegistered) {
-            Log.d(DBG, "NetworkCallback already registered â€” skipping duplicate")
+            Log.d(DBG, "NetworkCallback already registered — skipping duplicate")
             return
         }
 
@@ -287,29 +251,29 @@ class WiFiMonitoringService : Service() {
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
 
-            // â† DEBUG: onAvailable fires when WiFi associates to any network
+            // ← DEBUG: onAvailable fires when WiFi associates to any network
             override fun onAvailable(network: Network) {
-                Log.d(DBG, "ðŸ”” NetworkCallback.onAvailable network=$network " +
+                Log.d(DBG, "🔔 NetworkCallback.onAvailable network=$network " +
                         "callbackRegistered=$isNetworkCallbackRegistered")
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 capChangedCount++
 
-                // â† DEBUG: Log raw transportInfo class/value BEFORE any filtering
+                // ← DEBUG: Log raw transportInfo class/value BEFORE any filtering
                 val transportInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     caps.transportInfo
                 } else null
-                Log.d(DBG, "ðŸ”” NetworkCallback.onCapabilitiesChanged #$capChangedCount " +
+                Log.d(DBG, "🔔 NetworkCallback.onCapabilitiesChanged #$capChangedCount " +
                         "network=$network transportInfoClass=${transportInfo?.javaClass?.simpleName ?: "null"}")
 
-                // â† FIX + DEBUG: Extract WifiInfo from capabilities (API 29+)
+                // ← FIX + DEBUG: Extract WifiInfo from capabilities (API 29+)
                 val wifiInfo: WifiInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     caps.transportInfo as? WifiInfo
                 } else null
 
                 if (wifiInfo != null) {
-                    // â† DEBUG: Log raw WifiInfo string before masking-logic touches it
+                    // ← DEBUG: Log raw WifiInfo string before masking-logic touches it
                     val rawBssid = wifiInfo.bssid ?: "null"
                     val rawSsid  = wifiInfo.ssid  ?: "null"
                     Log.d(DBG, "  WifiInfo.toString()=${wifiInfo}")
@@ -318,25 +282,25 @@ class WiFiMonitoringService : Service() {
                     val bssid = rawBssid
                     val ssid  = rawSsid.replace("\"", "")
 
-                    // â† DEBUG: Log what we're passing into checkNetworkAuthorization
-                    Log.d(DBG, "  â†’ calling checkNetworkAuthorization(liveBssid=$bssid, liveSsid=$ssid) from NetworkCallback")
+                    // ← DEBUG: Log what we're passing into checkNetworkAuthorization
+                    Log.d(DBG, "  → calling checkNetworkAuthorization(liveBssid=$bssid, liveSsid=$ssid) from NetworkCallback")
                     wifiReceiver.checkNetworkAuthorization(
                         this@WiFiMonitoringService,
                         liveBssid = bssid,
                         liveSsid  = ssid,
-                        source    = "NetworkCallback"       // â† DEBUG source tag
+                        source    = "NetworkCallback"       // ← DEBUG source tag
                     )
                 } else {
-                    // â† DEBUG: explain WHY wifiInfo was null
+                    // ← DEBUG: explain WHY wifiInfo was null
                     val sdkReason = when {
                         Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ->
                             "SDK < 29 (transportInfo API not available)"
                         transportInfo == null ->
-                            "transportInfo is null â€” callback may have fired before WiFi fully attached"
+                            "transportInfo is null — callback may have fired before WiFi fully attached"
                         else ->
                             "transportInfo is ${transportInfo.javaClass.simpleName} (not WifiInfo)"
                     }
-                    Log.w(DBG, "  WifiInfo is null: $sdkReason â€” falling back to broadcast-path check")
+                    Log.w(DBG, "  WifiInfo is null: $sdkReason — falling back to broadcast-path check")
                     wifiReceiver.checkNetworkAuthorization(
                         this@WiFiMonitoringService,
                         source = "NetworkCallback-fallback"
@@ -345,8 +309,8 @@ class WiFiMonitoringService : Service() {
             }
 
             override fun onLost(network: Network) {
-                // â† DEBUG: Helps distinguish WiFi-lost from network-switch
-                Log.d(DBG, "ðŸ”” NetworkCallback.onLost network=$network " +
+                // ← DEBUG: Helps distinguish WiFi-lost from network-switch
+                Log.d(DBG, "🔔 NetworkCallback.onLost network=$network " +
                         "(WiFi-off breach handled by broadcast receiver)")
             }
         }
@@ -354,10 +318,10 @@ class WiFiMonitoringService : Service() {
         try {
             connectivityManager.registerNetworkCallback(request, networkCallback!!)
             isNetworkCallbackRegistered = true
-            Log.d(DBG, "âœ… NetworkCallback registered for TRANSPORT_WIFI at uptimeSec=" +
+            Log.d(DBG, "✅ NetworkCallback registered for TRANSPORT_WIFI at uptimeSec=" +
                     "${(SystemClock.elapsedRealtime() - serviceStartTime) / 1000}")
         } catch (e: Exception) {
-            Log.e(DBG, "âŒ Failed to register NetworkCallback: ${e.message}")
+            Log.e(DBG, "❌ Failed to register NetworkCallback: ${e.message}")
         }
     }
 
@@ -368,14 +332,14 @@ class WiFiMonitoringService : Service() {
                 connectivityManager.unregisterNetworkCallback(cb)
                 isNetworkCallbackRegistered = false
                 networkCallback = null
-                Log.d(DBG, "âœ… NetworkCallback unregistered")
+                Log.d(DBG, "✅ NetworkCallback unregistered")
             } catch (e: Exception) {
                 Log.w(DBG, "NetworkCallback unregister failed: ${e.message}")
             }
         }
     }
 
-    // â† DEBUG: Centralised permission state logger â€” call at key lifecycle points
+    // ← DEBUG: Centralised permission state logger — call at key lifecycle points
     private fun logPermissionState(calledFrom: String) {
         val fineGranted = ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACCESS_FINE_LOCATION
@@ -392,11 +356,11 @@ class WiFiMonitoringService : Service() {
                 "NEARBY_WIFI_DEVICES=${nearbyGranted ?: "N/A(<API33)"}")
     }
 
-    // â”€â”€ Private helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Private helpers ───────────────────────────────────────────────────────
 
     private fun scheduleNextAlarm() {
         val am = alarmManager ?: run {
-            Log.e(TAG, "AlarmManager is null â€” cannot schedule heartbeat alarm")
+            Log.e(TAG, "AlarmManager is null — cannot schedule heartbeat alarm")
             return
         }
         val intent = Intent(this, WiFiMonitoringService::class.java).apply {
@@ -408,7 +372,7 @@ class WiFiMonitoringService : Service() {
         )
         val triggerAt = SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS
         am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
-        Log.d(TAG, "â° Next heartbeat alarm in ${HEARTBEAT_INTERVAL_MS / 1000}s")
+        Log.d(TAG, "⏰ Next heartbeat alarm in ${HEARTBEAT_INTERVAL_MS / 1000}s")
     }
 
     internal fun acquireTimedWakeLock() {
@@ -418,7 +382,7 @@ class WiFiMonitoringService : Service() {
             )
             wl.setReferenceCounted(false)
             wl.acquire(WAKELOCK_TIMEOUT_MS)
-            Log.d(TAG, "ðŸ”’ WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 1000}s timeout)")
+            Log.d(TAG, "🔒 WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 1000}s timeout)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire WakeLock: ${e.message}")
         }
@@ -457,4 +421,3 @@ class WiFiMonitoringService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
 }
-
