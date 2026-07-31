@@ -141,8 +141,44 @@ class WiFiMonitoringService : Service() {
         Log.i(TAG, "✅ Authorized network saved on service start: SSID=$ssid")
     }
 
+    private fun ensureAuthorizedNetworkSaved() {
+        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val savedSsid = prefs.getString("authorized_ssid", "") ?: ""
+        val savedBssid = prefs.getString("authorized_bssid", "") ?: ""
+        
+        if (savedSsid.isNotEmpty()) {
+            Log.d(TAG, "Authorized network already saved: SSID=$savedSsid BSSID=$savedBssid")
+            return
+        }
+        
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (!wifiManager.isWifiEnabled) return
+        
+        @Suppress("DEPRECATION")
+        val info = wifiManager.connectionInfo ?: return
+        
+        @Suppress("DEPRECATION")
+        val ssid = info.ssid?.replace("\"", "")?.trim() ?: ""
+        
+        @Suppress("DEPRECATION")
+        val bssid = info.bssid ?: ""
+        val finalBssid = if (bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
+        
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") return
+        
+        prefs.edit().apply {
+            putString("authorized_ssid", ssid)
+            putString("authorized_bssid", finalBssid)
+            putLong("authorized_network_saved_at", System.currentTimeMillis())
+            apply()
+        }
+        
+        Log.i(TAG, "✅ Authorized network saved on service start: SSID=$ssid")
+    }
+
     override fun onCreate() {
         super.onCreate()
+        ensureAuthorizedNetworkSaved()
         ensureAuthorizedNetworkSaved()
         instance = this
 
