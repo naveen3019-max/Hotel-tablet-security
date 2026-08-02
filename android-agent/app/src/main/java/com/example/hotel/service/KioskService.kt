@@ -160,47 +160,61 @@ class KioskService : Service() {
                     heartbeatWakeLock.acquire(35_000L)
                     try {
                         ensureAuthorizedNetworkSaved()
-                        val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
-                        val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
-                        val roomId = prefs.getString("room_id", "UNKNOWN")!!
-                        val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
-                        val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" }
-                        if (auth == null) return@launch
-
-                        val repo = AgentRepository.default(applicationContext).alerts
-                        val rssi = getRssiWithRetry()
-                        val bssidActual = wifiFence.getCurrentBssid() ?: bssid
-                        val battery = batteryWatcher.getCurrentLevel()
                         
-                        val response = repo.heartbeat(
-                            auth,
-                            HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
-                        )
+                        val networkStatus = checkCurrentNetwork()
                         
-                        if (rssi > -120) lastKnownRssi = rssi
-                        Log.d("KioskService", "✅ Heartbeat OK RSSI=$rssi")
-                        
-                        // Sync offline queue if heartbeat succeeded
-                        try {
-                            val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
-                            val syncResult = offlineQueue.syncQueuedAlerts()
-                            if (syncResult.synced > 0) {
-                                Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
+                        when (networkStatus) {
+                            NetworkStatus.WRONG_NETWORK -> {
+                                Log.e("KioskService", "🚨 WRONG NETWORK DETECTED in heartbeat!") // ← NEW: Log wrong network
+                                triggerWrongNetworkBreach() // ← NEW: Trigger breach for wrong network
                             }
-                        } catch (e: Exception) {
-                            Log.e("KioskService", "Offline sync sub-task failed", e)
-                        }
+                            NetworkStatus.WIFI_OFF -> {
+                                Log.e("KioskService", "WiFi OFF in heartbeat") // ← NEW: Log WiFi off
+                            }
+                            NetworkStatus.CORRECT_NETWORK, NetworkStatus.UNKNOWN -> {
+                                val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
+                                val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
+                                val roomId = prefs.getString("room_id", "UNKNOWN")!!
+                                val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
+                                val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" }
+                                if (auth == null) return@launch
 
-                        val status = response["status"] as? String
-                        val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
-                                         status?.equals("COMPROMISED", ignoreCase = true) == true ||
-                                         status?.equals("BREACH", ignoreCase = true) == true
+                                val repo = AgentRepository.default(applicationContext).alerts
+                                val rssi = getRssiWithRetry()
+                                val bssidActual = wifiFence.getCurrentBssid() ?: bssid
+                                val battery = batteryWatcher.getCurrentLevel()
+                                
+                                val response = repo.heartbeat(
+                                    auth,
+                                    HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
+                                )
+                                
+                                if (rssi > -120) lastKnownRssi = rssi
+                                Log.d("KioskService", "✅ Heartbeat OK RSSI=$rssi")
+                                
+                                // Sync offline queue if heartbeat succeeded
+                                try {
+                                    val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
+                                    val syncResult = offlineQueue.syncQueuedAlerts()
+                                    if (syncResult.synced > 0) {
+                                        Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("KioskService", "Offline sync sub-task failed", e)
+                                }
 
-                        if (isBadStatus) {
-                             Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
-                             val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
-                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                             startActivity(lockIntent)
+                                val status = response["status"] as? String
+                                val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
+                                                 status?.equals("COMPROMISED", ignoreCase = true) == true ||
+                                                 status?.equals("BREACH", ignoreCase = true) == true
+
+                                if (isBadStatus) {
+                                     Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
+                                     val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
+                                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                                     startActivity(lockIntent)
+                                }
+                            }
                         }
                     } catch (e: java.io.IOException) {
                         Log.w("KioskService", "⚠️ Heartbeat network failed (Render slow?): ${e.message}")
@@ -605,60 +619,180 @@ class KioskService : Service() {
     }
 
     private fun ensureAuthorizedNetworkSaved() {
-        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
-        val existing = prefs.getString("authorized_ssid", "")
+        val prefs = getSharedPreferences(
+            "hotel_prefs", Context.MODE_PRIVATE)
+        
+        // ← NEW: Already saved check
+        val existing = prefs.getString(
+            "authorized_ssid", "")
         if (!existing.isNullOrEmpty()) return
         
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val wifiManager = applicationContext
+            .getSystemService(
+                Context.WIFI_SERVICE
+            ) as WifiManager
+        
         if (!wifiManager.isWifiEnabled) return
         
-        var ssid = ""
-        var bssid = ""
+        val ssid = try {
+            wifiManager.connectionInfo
+                ?.ssid
+                ?.replace("\"", "")
+                ?.trim() ?: ""
+        } catch (e: Exception) { "" }
         
-        try {
-            @Suppress("DEPRECATION")
-            val info = wifiManager.connectionInfo
-            @Suppress("DEPRECATION")
-            ssid = info?.ssid?.replace("\"", "")?.trim() ?: ""
-            @Suppress("DEPRECATION")
-            bssid = info?.bssid ?: ""
-        } catch (e: Exception) {
-            Log.w("KioskService", "connectionInfo failed: $e")
-        }
+        if (ssid.isEmpty() || 
+            ssid == "<unknown ssid>") return
         
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
-            try {
-                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-                val net = cm.activeNetwork
-                val caps = net?.let { cm.getNetworkCapabilities(it) }
-                if (Build.VERSION.SDK_INT >= 31) {
-                    val transport = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: false
-                    if (transport) {
-                        @Suppress("DEPRECATION")
-                        val info = wifiManager.connectionInfo
-                        @Suppress("DEPRECATION")
-                        ssid = info?.ssid?.replace("\"", "")?.trim() ?: ""
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("KioskService", "CM fallback failed: $e")
-            }
-        }
-        
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
-            Log.w("KioskService", "Cannot read SSID for auth network")
-            return
-        }
-        
-        val finalBssid = if (bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
+        val bssid = try {
+            val b = wifiManager.connectionInfo
+                ?.bssid ?: ""
+            if (b == "02:00:00:00:00:00") "" else b
+        } catch (e: Exception) { "" }
         
         prefs.edit().apply {
             putString("authorized_ssid", ssid)
-            putString("authorized_bssid", finalBssid)
+            putString("authorized_bssid", bssid)
             apply()
         }
         
-        Log.i("KioskService", "✅ Auth network saved in heartbeat: SSID='$ssid' BSSID='$finalBssid'")
+        Log.i("KioskService",
+            "✅ Authorized network saved: " +
+            "SSID='$ssid'") // ← NEW: log save
+    }
+
+    private fun checkCurrentNetwork(): NetworkStatus { // ← NEW: method to check network
+        val prefs = getSharedPreferences(
+            "hotel_prefs", Context.MODE_PRIVATE)
+        
+        val authorizedSsid = prefs.getString(
+            "authorized_ssid", "") ?: ""
+        
+        val wifiManager = applicationContext
+            .getSystemService(
+                Context.WIFI_SERVICE
+            ) as WifiManager
+        
+        // ← NEW: Check if WiFi is enabled
+        if (!wifiManager.isWifiEnabled) {
+            return NetworkStatus.WIFI_OFF
+        }
+        
+        // ← NEW: Check connectivity
+        val cm = getSystemService(
+            Context.CONNECTIVITY_SERVICE
+        ) as android.net.ConnectivityManager
+        
+        val network = cm.activeNetwork
+        val caps = network?.let {
+            cm.getNetworkCapabilities(it)
+        }
+        
+        val isWifiConnected = caps?.hasTransport(
+            android.net.NetworkCapabilities.TRANSPORT_WIFI
+        ) ?: false
+        
+        if (!isWifiConnected) {
+            return NetworkStatus.WIFI_OFF
+        }
+        
+        // ← NEW: Get current SSID
+        val currentSsid = try {
+            wifiManager.connectionInfo
+                ?.ssid
+                ?.replace("\"", "")
+                ?.trim() ?: ""
+        } catch (e: Exception) { "" }
+        
+        Log.d("KioskService",
+            "Network check: " +
+            "current='$currentSsid' " +
+            "authorized='$authorizedSsid'")
+        
+        // ← NEW: If no authorized network saved, save current
+        if (authorizedSsid.isEmpty()) {
+            if (currentSsid.isNotEmpty() &&
+                currentSsid != "<unknown ssid>") {
+                prefs.edit()
+                    .putString(
+                        "authorized_ssid",
+                        currentSsid)
+                    .apply()
+                Log.i("KioskService",
+                    "✅ Saved authorized: " +
+                    "'$currentSsid'")
+            }
+            return NetworkStatus.CORRECT_NETWORK
+        }
+        
+        // ← NEW: Unknown SSID — skip check
+        if (currentSsid.isEmpty() ||
+            currentSsid == "<unknown ssid>") {
+            return NetworkStatus.UNKNOWN
+        }
+        
+        // ← NEW: Compare SSID
+        return if (currentSsid == authorizedSsid) {
+            NetworkStatus.CORRECT_NETWORK
+        } else {
+            Log.e("KioskService",
+                "🚨 WRONG NETWORK: " +
+                "current='$currentSsid' " +
+                "expected='$authorizedSsid'")
+            NetworkStatus.WRONG_NETWORK
+        }
+    }
+
+    private fun triggerWrongNetworkBreach() { // ← NEW: handle breach via SSID mismatch
+        val prefs = getSharedPreferences(
+            "hotel_prefs", Context.MODE_PRIVATE)
+        val authorizedSsid = prefs.getString(
+            "authorized_ssid", "") ?: ""
+        
+        val wifiManager = applicationContext
+            .getSystemService(
+                Context.WIFI_SERVICE
+            ) as WifiManager
+        val currentSsid = try {
+            wifiManager.connectionInfo
+                ?.ssid
+                ?.replace("\"", "")
+                ?.trim() ?: "Unknown"
+        } catch (e: Exception) { "Unknown" }
+        
+        val reason = "Wrong WiFi network: " +
+            "connected to '$currentSsid' " +
+            "but authorized '$authorizedSsid'"
+        
+        // ← NEW: Call the offline queue or backend breach logic
+        val deviceId = getSharedPreferences("agent", Context.MODE_PRIVATE)
+            .getString("device_id", "TAB-UNKNOWN")!!
+        val roomId = getSharedPreferences("agent", Context.MODE_PRIVATE)
+            .getString("room_id", "UNKNOWN")!!
+            
+        // We reuse the existing breach logic for WiFi Fence breach by dispatching a call
+        Log.e("KioskService", "🚨 Wrong network breach: $reason")
+        
+        val auth = getSharedPreferences("agent", Context.MODE_PRIVATE)
+            .getString("jwt_token", null)?.let { "Bearer $it" }
+            
+        if (auth != null) {
+            serviceScope.launch {
+                try {
+                    val repo = AgentRepository.default(applicationContext).alerts
+                    repo.breach(auth, BreachRequest(deviceId, roomId, -127))
+                } catch(e: Exception) {
+                    OfflineQueueManager.getInstance(applicationContext).queueAlert(
+                        "breach", deviceId, roomId, mapOf("rssi" to -127, "message" to reason)
+                    )
+                }
+            }
+        }
+        
+        val lockIntent = Intent(this, com.example.hotel.ui.LockActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        startActivity(lockIntent)
     }
 
     // Call this once on first start AND after each heartbeat
@@ -884,3 +1018,10 @@ data class WifiData(
     val bssid: String,
     val isConnected: Boolean
 )
+
+enum class NetworkStatus { // ← NEW: Status for network connection
+    CORRECT_NETWORK,
+    WRONG_NETWORK,
+    WIFI_OFF,
+    UNKNOWN
+}

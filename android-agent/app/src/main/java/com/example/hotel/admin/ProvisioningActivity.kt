@@ -1,4 +1,4 @@
-﻿package com.example.hotel.admin
+package com.example.hotel.admin
 
 import android.content.ComponentName       // â† NEW: used to target MainActivityAlias
 import android.content.Context
@@ -556,7 +556,7 @@ class ProvisioningActivity : AppCompatActivity() {
      * Each service calls startForeground() in its own onCreate() within 5 s.
      */
     private fun startMonitoringServices() {
-        // â† NEW: Start WiFi heartbeat + breach detection service
+        // â†  NEW: Start WiFi heartbeat + breach detection service
         val wifiIntent = Intent(this, WiFiMonitoringService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(wifiIntent)
@@ -565,7 +565,7 @@ class ProvisioningActivity : AppCompatActivity() {
         }
         Log.i(TAG, "âœ… WiFiMonitoringService started")
 
-        // â† NEW: Start kiosk lock + screen management service
+        // â†  NEW: Start kiosk lock + screen management service
         val kioskIntent = Intent(this, com.example.hotel.service.KioskService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(kioskIntent)
@@ -575,32 +575,34 @@ class ProvisioningActivity : AppCompatActivity() {
         Log.i(TAG, "âœ… KioskService started")
     }
 
-    // â† NEW: Save authorized WiFi network
+    // <- NEW: Save authorized WiFi network on registration
     private fun saveAuthorizedNetwork() {
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        
         if (!wifiManager.isWifiEnabled) return
-        
+
+        @Suppress("DEPRECATION")
         val info = wifiManager.connectionInfo ?: return
-        
+
+        @Suppress("DEPRECATION")
+        val ssid = info.ssid?.replace("\"", "")?.trim() ?: ""
+
+        @Suppress("DEPRECATION")
         val bssid = info.bssid ?: ""
-        val ssid = info.ssid?.replace("\"", "") ?: ""
-        
-        // â† Skip privacy MAC
-        val finalBssid = if (bssid == "02:00:00:00:00:00") "" else bssid
-        
-        if (finalBssid.isEmpty() && ssid.isEmpty()) {
-            Log.w(TAG, "Cannot save authorized network â€” no WiFi info available")
+
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
+            Log.w(TAG, "Cannot save authorized network - SSID empty at registration")
             return
         }
-        
+
+        val finalBssid = if (bssid == "02:00:00:00:00:00") "" else bssid
+
         getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit().apply {
-            putString("authorized_bssid", finalBssid)
             putString("authorized_ssid", ssid)
+            putString("authorized_bssid", finalBssid)
             apply()
         }
-        
-        Log.i(TAG, "âœ… Authorized network saved: BSSID=$finalBssid SSID=$ssid")
+
+        Log.i(TAG, "Authorized network saved at registration: SSID='$ssid' BSSID='$finalBssid'")
     }
 }
 
