@@ -8,6 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.wifi.WifiManager
+import android.net.wifi.WifiInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.app.AlarmManager
@@ -618,179 +621,231 @@ class KioskService : Service() {
         return lastKnownRssi
     }
 
-    private fun ensureAuthorizedNetworkSaved() {
-        val prefs = getSharedPreferences(
-            "hotel_prefs", Context.MODE_PRIVATE)
-        
-        // ← NEW: Already saved check
-        val existing = prefs.getString(
-            "authorized_ssid", "")
-        if (!existing.isNullOrEmpty()) return
-        
+    // ─────────────────────────────────────────────────────────────────────
+    // getCurrentNetworkIdentity()
+    // Reads WiFi identity WITHOUT location permission using 3 fallback methods:
+    //   Method 1 (API 31+): caps.transportInfo as WifiInfo — real SSID, no permission
+    //   Method 2 (all APIs): connectionInfo — SSID may be "<unknown>", but BSSID
+    //                        and networkId still work
+    // ─────────────────────────────────────────────────────────────────────
+    private fun getCurrentNetworkIdentity(): NetworkIdentity {
         val wifiManager = applicationContext
-            .getSystemService(
-                Context.WIFI_SERVICE
-            ) as WifiManager
-        
-        if (!wifiManager.isWifiEnabled) return
-        
-        val ssid = try {
-            wifiManager.connectionInfo
-                ?.ssid
-                ?.replace("\"", "")
-                ?.trim() ?: ""
-        } catch (e: Exception) { "" }
-        
-        if (ssid.isEmpty() || 
-            ssid == "<unknown ssid>") return
-        
-        val bssid = try {
-            val b = wifiManager.connectionInfo
-                ?.bssid ?: ""
-            if (b == "02:00:00:00:00:00") "" else b
-        } catch (e: Exception) { "" }
-        
-        prefs.edit().apply {
-            putString("authorized_ssid", ssid)
-            putString("authorized_bssid", bssid)
-            apply()
+            .getSystemService(Context.WIFI_SERVICE) as WifiManager
+
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork
+        val caps = network?.let { cm.getNetworkCapabilities(it) }
+        val isWifiConnected = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+
+        if (!isWifiConnected) {
+            return NetworkIdentity(ssid = "", bssid = "", networkId = -1, isConnected = false)
         }
-        
-        Log.i("KioskService",
-            "✅ Authorized network saved: " +
-            "SSID='$ssid'") // ← NEW: log save
+
+        var ssid = ""
+        var bssid = ""
+        var networkId = -1
+
+        // Method 1: Android 12+ (API 31+) — WifiInfo via NetworkCapabilities
+        // Works WITHOUT ACCESS_FINE_LOCATION
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val wifiInfo = caps?.transportInfo as? WifiInfo
+                if (wifiInfo != null) {
+                    ssid = wifiInfo.ssid?.replace("\"", "")?.trim() ?: ""
+                    bssid = wifiInfo.bssid ?: ""
+                    networkId = wifiInfo.networkId
+                    Log.d("KioskService",
+                        "Method1 (API31+): SSID='$ssid' BSSID='$bssid' netId=$networkId")
+                }
+            } catch (e: Exception) {
+                Log.w("KioskService", "Method1 failed: $e")
+            }
+        }
+
+        // Method 2: connectionInfo fallback (all APIs)
+        // SSID may be "<unknown ssid>" on API 29-30 without location,
+        // but BSSID and networkId still return valid values
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
+            try {
+                @Suppress("DEPRECATION")
+                val info = wifiManager.connectionInfo
+                if (info != null) {
+                    val rawSsid = info.ssid?.replace("\"", "")?.trim() ?: ""
+                    if (rawSsid.isNotEmpty() && rawSsid != "<unknown ssid>") {
+                        ssid = rawSsid
+                    }
+                    if (bssid.isEmpty()) bssid = info.bssid ?: ""
+                    if (networkId == -1) networkId = info.networkId
+                    Log.d("KioskService",
+                        "Method2 (connectionInfo): SSID='$rawSsid' BSSID='$bssid' netId=$networkId")
+                }
+            } catch (e: Exception) {
+                Log.w("KioskService", "Method2 failed: $e")
+            }
+        }
+
+        // Clean up privacy/randomised MAC addresses — treat as empty
+        val finalBssid = if (bssid == "02:00:00:00:00:00" ||
+            bssid == "00:00:00:00:00:00") "" else bssid
+
+        return NetworkIdentity(
+            ssid = ssid,
+            bssid = finalBssid,
+            networkId = networkId,
+            isConnected = true
+        )
     }
 
-    private fun checkCurrentNetwork(): NetworkStatus { // ← NEW: method to check network
-        val prefs = getSharedPreferences(
-            "hotel_prefs", Context.MODE_PRIVATE)
-        
-        val authorizedSsid = prefs.getString(
-            "authorized_ssid", "") ?: ""
-        
-        val wifiManager = applicationContext
-            .getSystemService(
-                Context.WIFI_SERVICE
-            ) as WifiManager
-        
-        // ← NEW: Check if WiFi is enabled
-        if (!wifiManager.isWifiEnabled) {
-            return NetworkStatus.WIFI_OFF
+    private fun ensureAuthorizedNetworkSaved() {
+        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+
+        val existingSsid  = prefs.getString("authorized_ssid", "") ?: ""
+        val existingBssid = prefs.getString("authorized_bssid", "") ?: ""
+        val existingNetId = prefs.getInt("authorized_net_id", -1)
+
+        // Already saved — nothing to do
+        if (existingSsid.isNotEmpty() ||
+            existingBssid.isNotEmpty() ||
+            existingNetId != -1) return
+
+        val identity = getCurrentNetworkIdentity()
+        if (identity.isConnected) {
+            saveAuthorizedNetwork(identity)
         }
-        
-        // ← NEW: Check connectivity
-        val cm = getSystemService(
-            Context.CONNECTIVITY_SERVICE
-        ) as android.net.ConnectivityManager
-        
-        val network = cm.activeNetwork
-        val caps = network?.let {
-            cm.getNetworkCapabilities(it)
+    }
+
+    // Overload that takes a NetworkIdentity — called on first heartbeat and on registration
+    private fun saveAuthorizedNetwork(identity: NetworkIdentity) {
+        getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit().apply {
+            putString("authorized_ssid",  identity.ssid)
+            putString("authorized_bssid", identity.bssid)
+            putInt("authorized_net_id",   identity.networkId)
+            apply()
         }
-        
-        val isWifiConnected = caps?.hasTransport(
-            android.net.NetworkCapabilities.TRANSPORT_WIFI
-        ) ?: false
-        
-        if (!isWifiConnected) {
-            return NetworkStatus.WIFI_OFF
-        }
-        
-        // ← NEW: Get current SSID
-        val currentSsid = try {
-            wifiManager.connectionInfo
-                ?.ssid
-                ?.replace("\"", "")
-                ?.trim() ?: ""
-        } catch (e: Exception) { "" }
-        
+        Log.i("KioskService",
+            "✅ Authorized network saved: " +
+            "SSID='${identity.ssid}' " +
+            "BSSID='${identity.bssid}' " +
+            "netId=${identity.networkId}")
+    }
+
+    private fun checkCurrentNetwork(): NetworkStatus {
+        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+
+        val authorizedSsid  = prefs.getString("authorized_ssid",  "") ?: ""
+        val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
+        val authorizedNetId = prefs.getInt("authorized_net_id", -1)
+
+        val current = getCurrentNetworkIdentity()
+
         Log.d("KioskService",
             "Network check: " +
-            "current='$currentSsid' " +
-            "authorized='$authorizedSsid'")
-        
-        // ← NEW: If no authorized network saved, save current
-        if (authorizedSsid.isEmpty()) {
-            if (currentSsid.isNotEmpty() &&
-                currentSsid != "<unknown ssid>") {
-                prefs.edit()
-                    .putString(
-                        "authorized_ssid",
-                        currentSsid)
-                    .apply()
-                Log.i("KioskService",
-                    "✅ Saved authorized: " +
-                    "'$currentSsid'")
-            }
+            "SSID='${current.ssid}' BSSID='${current.bssid}' netId=${current.networkId} | " +
+            "Auth SSID='$authorizedSsid' BSSID='$authorizedBssid' netId=$authorizedNetId")
+
+        if (!current.isConnected) return NetworkStatus.WIFI_OFF
+
+        // Nothing saved yet — save current as authorised on first heartbeat
+        if (authorizedSsid.isEmpty() &&
+            authorizedBssid.isEmpty() &&
+            authorizedNetId == -1) {
+            saveAuthorizedNetwork(current)
             return NetworkStatus.CORRECT_NETWORK
         }
-        
-        // ← NEW: Unknown SSID — skip check
-        if (currentSsid.isEmpty() ||
-            currentSsid == "<unknown ssid>") {
+
+        // ── COMPARISON CHAIN ─────────────────────────────────────────────
+        // Try each identifier in priority order; use the first one available.
+        // On Android 10-11 SSID may be unavailable but netId/BSSID still work.
+        var matchResult: Boolean? = null
+
+        // Check 1 — SSID (most human-readable; skip if unknown)
+        if (authorizedSsid.isNotEmpty() &&
+            current.ssid.isNotEmpty() &&
+            current.ssid != "<unknown ssid>") {
+            matchResult = (current.ssid == authorizedSsid)
+            Log.d("KioskService",
+                "SSID check: '${current.ssid}' == '$authorizedSsid' → $matchResult")
+        }
+
+        // Check 2 — networkId (unique integer per saved WiFi profile)
+        // A different hotspot has a different networkId → reliable without location
+        if (matchResult == null &&
+            authorizedNetId != -1 &&
+            current.networkId != -1) {
+            matchResult = (current.networkId == authorizedNetId)
+            Log.d("KioskService",
+                "netId check: ${current.networkId} == $authorizedNetId → $matchResult")
+        }
+
+        // Check 3 — BSSID (router MAC address; last resort)
+        if (matchResult == null &&
+            authorizedBssid.isNotEmpty() &&
+            current.bssid.isNotEmpty()) {
+            matchResult = (current.bssid == authorizedBssid)
+            Log.d("KioskService",
+                "BSSID check: '${current.bssid}' == '$authorizedBssid' → $matchResult")
+        }
+
+        // All identifiers unknown — cannot decide, skip breach
+        if (matchResult == null) {
+            Log.w("KioskService", "Cannot compare networks — all identifiers unknown")
             return NetworkStatus.UNKNOWN
         }
-        
-        // ← NEW: Compare SSID
-        return if (currentSsid == authorizedSsid) {
+
+        return if (matchResult == true) {
             NetworkStatus.CORRECT_NETWORK
         } else {
             Log.e("KioskService",
-                "🚨 WRONG NETWORK: " +
-                "current='$currentSsid' " +
-                "expected='$authorizedSsid'")
+                "🚨 WRONG NETWORK! " +
+                "current SSID='${current.ssid}' netId=${current.networkId} " +
+                "expected SSID='$authorizedSsid' netId=$authorizedNetId")
             NetworkStatus.WRONG_NETWORK
         }
     }
 
-    private fun triggerWrongNetworkBreach() { // ← NEW: handle breach via SSID mismatch
-        val prefs = getSharedPreferences(
-            "hotel_prefs", Context.MODE_PRIVATE)
-        val authorizedSsid = prefs.getString(
-            "authorized_ssid", "") ?: ""
-        
-        val wifiManager = applicationContext
-            .getSystemService(
-                Context.WIFI_SERVICE
-            ) as WifiManager
-        val currentSsid = try {
-            wifiManager.connectionInfo
-                ?.ssid
-                ?.replace("\"", "")
-                ?.trim() ?: "Unknown"
-        } catch (e: Exception) { "Unknown" }
-        
-        val reason = "Wrong WiFi network: " +
-            "connected to '$currentSsid' " +
-            "but authorized '$authorizedSsid'"
-        
-        // ← NEW: Call the offline queue or backend breach logic
+    private fun triggerWrongNetworkBreach() {
+        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
+        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
+        val authorizedNetId = prefs.getInt("authorized_net_id", -1)
+
+        val current = getCurrentNetworkIdentity()
+
+        val reason = "Wrong WiFi: connected to " +
+            "SSID='${current.ssid}' netId=${current.networkId} " +
+            "but authorized SSID='$authorizedSsid' netId=$authorizedNetId"
+
         val deviceId = getSharedPreferences("agent", Context.MODE_PRIVATE)
             .getString("device_id", "TAB-UNKNOWN")!!
         val roomId = getSharedPreferences("agent", Context.MODE_PRIVATE)
             .getString("room_id", "UNKNOWN")!!
-            
-        // We reuse the existing breach logic for WiFi Fence breach by dispatching a call
+
         Log.e("KioskService", "🚨 Wrong network breach: $reason")
-        
+
         val auth = getSharedPreferences("agent", Context.MODE_PRIVATE)
             .getString("jwt_token", null)?.let { "Bearer $it" }
-            
+
         if (auth != null) {
             serviceScope.launch {
                 try {
                     val repo = AgentRepository.default(applicationContext).alerts
                     repo.breach(auth, BreachRequest(deviceId, roomId, -127))
-                } catch(e: Exception) {
+                } catch (e: Exception) {
                     OfflineQueueManager.getInstance(applicationContext).queueAlert(
-                        "breach", deviceId, roomId, mapOf("rssi" to -127, "message" to reason)
+                        "breach", deviceId, roomId,
+                        mapOf("rssi" to -127, "message" to reason)
                     )
                 }
             }
         }
-        
-        val lockIntent = Intent(this, com.example.hotel.ui.LockActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
+        val lockIntent = Intent(
+            this,
+            com.example.hotel.ui.LockActivity::class.java
+        ).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
         }
         startActivity(lockIntent)
     }
@@ -1016,6 +1071,15 @@ class KioskService : Service() {
 data class WifiData(
     val rssi: Int,
     val bssid: String,
+    val isConnected: Boolean
+)
+
+// Holds all three identifiers used to recognise a specific WiFi network
+// without requiring ACCESS_FINE_LOCATION on Android 10-11
+data class NetworkIdentity(
+    val ssid: String,       // may be empty / "<unknown ssid>" on API 29-30
+    val bssid: String,      // router MAC — available without location on most devices
+    val networkId: Int,     // unique int per saved WiFi profile — works without location
     val isConnected: Boolean
 )
 
