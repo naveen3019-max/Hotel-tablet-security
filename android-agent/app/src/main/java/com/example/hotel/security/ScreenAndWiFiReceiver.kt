@@ -1,4 +1,4 @@
-﻿package com.example.hotel.security
+package com.example.hotel.security
 
 import android.Manifest
 import android.content.BroadcastReceiver
@@ -17,6 +17,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.net.NetworkInfo
 import androidx.core.content.ContextCompat
+import com.example.hotel.service.KioskService
 import java.net.URL
 import java.net.HttpURLConnection
 import org.json.JSONObject
@@ -26,7 +27,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "ScreenAndWiFiReceiver"
-        private const val DBG = "WIFI_BREACH_DEBUG"   // â† DEBUG: unified tag for logcat filtering
+        private const val DBG = "WIFI_BREACH_DEBUG"   // ← DEBUG: unified tag for logcat filtering
         private const val UNKNOWN_SSID = "<unknown ssid>"
         private const val PRIVACY_MAC  = "02:00:00:00:00:00"
     }
@@ -60,30 +61,76 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                 WifiManager.WIFI_STATE_CHANGED_ACTION -> {
                     val wifiState = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN)
                     when (wifiState) {
+                        WifiManager.WIFI_STATE_ENABLING -> {
+                            // WiFi turning on — reset stabilization so timer re-arms on connect
+                            KioskService.wifiTurnedOnAt = 0L
+                            KioskService.wifiStabilized = false
+                            Log.d(TAG, "WiFi enabling...")
+                        }
                         WifiManager.WIFI_STATE_DISABLING -> {
-                            Log.e(TAG, "ðŸš¨ WiFi DISABLING!")
+                            Log.e(TAG, "🚨 WiFi DISABLING!")
+                            // Reset stabilization — WiFi is going away
+                            KioskService.wifiTurnedOnAt = 0L
+                            KioskService.wifiStabilized = false
                             sendServiceIntent(context, "WIFI_OFF_BREACH", true)
                         }
                         WifiManager.WIFI_STATE_DISABLED -> {
-                            Log.d(TAG, "WiFi DISABLED")
-                            sendServiceIntent(context, "WIFI_OFF_BREACH", false)
+                            // WiFi fully off — DISABLING already fired the breach intent.
+                            // Do NOT fire a second WIFI_OFF_BREACH here; that is the
+                            // primary cause of duplicate breach POSTs on the dashboard.
+                            // Only reset stabilization counters for the next connect.
+                            KioskService.wifiTurnedOnAt = 0L
+                            KioskService.wifiStabilized = false
+                            Log.d(TAG, "WiFi DISABLED (breach already fired on DISABLING)")
                         }
                         WifiManager.WIFI_STATE_ENABLED -> {
-                            Log.d(TAG, "âœ… WiFi ENABLED â€” sending WIFI_RESTORED")
+                            Log.d(TAG, "✅ WiFi ENABLED — resetting stabilization, waiting 5s before pending check")
+                            // Reset stabilization so KioskService timer starts fresh
+                            KioskService.wifiTurnedOnAt = 0L
+                            KioskService.wifiStabilized = false
+
+                            // Reset breach active flag so SixSignalMonitor loss timer
+                            // doesn't carry over a stale state from when WiFi was off
+                            SixSignalMonitor.isBreachActive = false
+
+                            // Notify WiFiMonitoringService that WiFi is restored
                             val si = Intent(context, WiFiMonitoringService::class.java).apply {
                                 this.action = "WIFI_RESTORED"
                             }
                             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(si)
                             else context.startService(si)
+
+                            // Wait 5 seconds for network to stabilize, then:
+                            //   a) Send any pending breach that was saved when WiFi was off
+                            //   b) Send a recovery heartbeat once the pending breach is clear
                             Handler(Looper.getMainLooper()).postDelayed({
-                                Thread { sendRecoveryHeartbeat(context) }.start()
-                            }, 5000L)
+                                val prefs = context.getSharedPreferences(
+                                    "hotel_prefs", Context.MODE_PRIVATE
+                                )
+                                val hasPending = prefs.getBoolean("pending_breach", false)
+
+                                val monitor = SixSignalMonitor.getInstance()
+                                if (hasPending && monitor != null) {
+                                    Log.i(TAG, "WiFi ON: pending breach found — sending now")
+                                    monitor.sendPendingBreachIfExists()
+                                } else {
+                                    Log.d(TAG, "WiFi ON: no pending breach — skipping")
+                                }
+
+                                // Recovery heartbeat: delay further if we just sent a pending
+                                // breach, so the dashboard sees breach → clear in order.
+                                val recoveryDelay = if (hasPending) 8_000L else 2_000L
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    Thread { sendRecoveryHeartbeat(context) }.start()
+                                }, recoveryDelay)
+
+                            }, 5_000L)  // 5-second stabilization delay
                         }
                     }
                 }
 
                 WifiManager.NETWORK_STATE_CHANGED_ACTION -> {
-                    // â† Kept as secondary/backup (deprecated but still works as fallback)
+                    // ← Kept as secondary/backup (deprecated but still works as fallback)
                     @Suppress("DEPRECATION")
                     val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiManager.EXTRA_NETWORK_INFO)
                     @Suppress("DEPRECATION")
@@ -99,8 +146,14 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                         val wifiState = wm.wifiState
                         if (wifiState == WifiManager.WIFI_STATE_DISABLED || wifiState == WifiManager.WIFI_STATE_DISABLING) {
-                            Log.e(TAG, "CONNECTIVITY_ACTION: WiFi is OFF, sending breach")
-                            sendServiceIntent(context, "WIFI_OFF_BREACH", false)
+                            // Guard: skip if a breach POST is already running from the
+                            // WIFI_STATE_DISABLING broadcast — avoids a third duplicate.
+                            if (SixSignalMonitor.breachPostInFlight) {
+                                Log.d(TAG, "CONNECTIVITY_ACTION: breach already in-flight — skipping")
+                            } else {
+                                Log.e(TAG, "CONNECTIVITY_ACTION: WiFi is OFF, sending breach")
+                                sendServiceIntent(context, "WIFI_OFF_BREACH", false)
+                            }
                         }
                     }
                 }

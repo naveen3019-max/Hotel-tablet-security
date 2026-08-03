@@ -114,6 +114,14 @@ class KioskService : Service() {
         const val NOTIFICATION_ID = 1
         const val ACTION_HEARTBEAT = "com.hotel.security.ACTION_HEARTBEAT"
         const val HEARTBEAT_INTERVAL_MS = 10_000L
+
+        // ← FIX: WiFi stabilization tracking
+        // Tracks the moment WiFi first reported as connected so we can
+        // skip SSID checks during the transition window where SSID
+        // may still read as "" or "<unknown ssid>".
+        @Volatile var wifiTurnedOnAt = 0L
+        @Volatile var wifiStabilized = false
+        const val WIFI_STABILIZE_DELAY = 10_000L // 10 seconds
     }
 
     private val alarmManager by lazy {
@@ -175,55 +183,23 @@ class KioskService : Service() {
                         
                         when (networkStatus) {
                             NetworkStatus.WRONG_NETWORK -> {
-                                Log.e("KioskService", "🚨 WRONG NETWORK DETECTED in heartbeat!") // ← NEW: Log wrong network
-                                triggerWrongNetworkBreach() // ← NEW: Trigger breach for wrong network
+                                Log.e("KioskService", "🚨 WRONG NETWORK DETECTED in heartbeat!")
+                                triggerWrongNetworkBreach()
                             }
                             NetworkStatus.WIFI_OFF -> {
-                                Log.e("KioskService", "WiFi OFF in heartbeat") // ← NEW: Log WiFi off
+                                Log.e("KioskService", "WiFi OFF in heartbeat")
+                                // WiFi OFF breach is handled by ScreenAndWiFiReceiver / SixSignalMonitor
+                            }
+                            NetworkStatus.STABILIZING -> {
+                                // ← FIX: WiFi just connected — SSID not readable yet
+                                // Do NOT breach; send a normal heartbeat so the backend
+                                // knows we are still alive during the stabilization window.
+                                Log.d("KioskService",
+                                    "⏳ WiFi stabilizing — skipping network check, sending heartbeat")
+                                sendHeartbeatToBackend()
                             }
                             NetworkStatus.CORRECT_NETWORK, NetworkStatus.UNKNOWN -> {
-                                val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
-                                val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
-                                val roomId = prefs.getString("room_id", "UNKNOWN")!!
-                                val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
-                                val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" }
-                                if (auth == null) return@launch
-
-                                val repo = AgentRepository.default(applicationContext).alerts
-                                val rssi = getRssiWithRetry()
-                                val bssidActual = wifiFence.getCurrentBssid() ?: bssid
-                                val battery = batteryWatcher.getCurrentLevel()
-                                
-                                val response = repo.heartbeat(
-                                    auth,
-                                    HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
-                                )
-                                
-                                if (rssi > -120) lastKnownRssi = rssi
-                                Log.d("KioskService", "✅ Heartbeat OK RSSI=$rssi")
-                                
-                                // Sync offline queue if heartbeat succeeded
-                                try {
-                                    val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
-                                    val syncResult = offlineQueue.syncQueuedAlerts()
-                                    if (syncResult.synced > 0) {
-                                        Log.i("KioskService", "Successfully synced ${syncResult.synced} offline alerts")
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("KioskService", "Offline sync sub-task failed", e)
-                                }
-
-                                val status = response["status"] as? String
-                                val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
-                                                 status?.equals("COMPROMISED", ignoreCase = true) == true ||
-                                                 status?.equals("BREACH", ignoreCase = true) == true
-
-                                if (isBadStatus) {
-                                     Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
-                                     val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
-                                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                                     startActivity(lockIntent)
-                                }
+                                sendHeartbeatToBackend()
                             }
                         }
                     } catch (e: java.io.IOException) {
@@ -743,9 +719,53 @@ class KioskService : Service() {
         val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
         val authorizedNetId = prefs.getInt("authorized_net_id", -1)
 
+        val wifiManager = applicationContext
+            .getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val cm = applicationContext
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+        // ← FIX 1: Check WiFi is even enabled
+        if (!wifiManager.isWifiEnabled) {
+            // WiFi turned off — reset stabilization counters
+            wifiTurnedOnAt = 0L
+            wifiStabilized = false
+            return NetworkStatus.WIFI_OFF
+        }
+
+        // ← FIX 1: Check active transport
+        val network = cm.activeNetwork
+        val caps = network?.let { cm.getNetworkCapabilities(it) }
+        val isWifiConnected = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+
+        if (!isWifiConnected) {
+            // WiFi enabled but no active WiFi transport yet
+            // (IP not assigned, DHCP in progress, etc.)
+            // Treat as WIFI_OFF to avoid false breach
+            return NetworkStatus.WIFI_OFF
+        }
+
+        // ← FIX 3: WiFi just connected — start stabilization timer
+        if (wifiTurnedOnAt == 0L) {
+            wifiTurnedOnAt = SystemClock.elapsedRealtime()
+            wifiStabilized = false
+            Log.d("KioskService",
+                "WiFi transport UP — starting ${WIFI_STABILIZE_DELAY}ms stabilization timer")
+        }
+
+        // ← FIX 1 & 3: Skip check while SSID is not yet readable
+        val timeSinceConnect = SystemClock.elapsedRealtime() - wifiTurnedOnAt
+        if (timeSinceConnect < WIFI_STABILIZE_DELAY) {
+            Log.d("KioskService",
+                "⏳ WiFi stabilizing... ${timeSinceConnect}ms / ${WIFI_STABILIZE_DELAY}ms — skipping check")
+            return NetworkStatus.STABILIZING
+        }
+
+        // WiFi has fully stabilized
+        wifiStabilized = true
+
         val current = getCurrentNetworkIdentity()
 
-        Log.d("KioskService",
+        Log.i("KioskService",
             "Network check: " +
             "SSID='${current.ssid}' BSSID='${current.bssid}' netId=${current.networkId} | " +
             "Auth SSID='$authorizedSsid' BSSID='$authorizedBssid' netId=$authorizedNetId")
@@ -758,6 +778,17 @@ class KioskService : Service() {
             authorizedNetId == -1) {
             saveAuthorizedNetwork(current)
             return NetworkStatus.CORRECT_NETWORK
+        }
+
+        // ← FIX 2: If ALL identifiers are unknown, skip to avoid false breach
+        val allUnknown = (current.ssid.isEmpty() ||
+            current.ssid == "<unknown ssid>") &&
+            current.bssid.isEmpty() &&
+            current.networkId == -1
+        if (allUnknown) {
+            Log.w("KioskService",
+                "⚠️ All identifiers unknown — skipping to avoid false breach")
+            return NetworkStatus.UNKNOWN
         }
 
         // ── COMPARISON CHAIN ─────────────────────────────────────────────
@@ -800,6 +831,8 @@ class KioskService : Service() {
         }
 
         return if (matchResult == true) {
+            // ← Mark stabilizer as complete so next reconnect re-arms correctly
+            wifiTurnedOnAt = SystemClock.elapsedRealtime() - WIFI_STABILIZE_DELAY - 1_000L
             NetworkStatus.CORRECT_NETWORK
         } else {
             Log.e("KioskService",
@@ -807,6 +840,54 @@ class KioskService : Service() {
                 "current SSID='${current.ssid}' netId=${current.networkId} " +
                 "expected SSID='$authorizedSsid' netId=$authorizedNetId")
             NetworkStatus.WRONG_NETWORK
+        }
+    }
+
+    /**
+     * Sends a normal heartbeat to the backend and handles offline sync.
+     * Called from both CORRECT_NETWORK and STABILIZING heartbeat branches.
+     * Must be called from within a coroutine (suspend function).
+     */
+    private suspend fun sendHeartbeatToBackend() {
+        val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
+        val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
+        val roomId = prefs.getString("room_id", "UNKNOWN")!!
+        val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
+        val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" } ?: return
+
+        val repo = AgentRepository.default(applicationContext).alerts
+        val rssi = getRssiWithRetry()
+        val bssidActual = wifiFence.getCurrentBssid() ?: bssid
+        val battery = batteryWatcher.getCurrentLevel()
+
+        val response = repo.heartbeat(
+            auth,
+            HeartbeatRequest(deviceId, roomId, bssidActual, rssi, battery)
+        )
+
+        if (rssi > -120) lastKnownRssi = rssi
+        Log.d("KioskService", "✅ Heartbeat OK RSSI=$rssi")
+
+        // Sync offline queue after successful heartbeat
+        try {
+            val offlineQueue = OfflineQueueManager.getInstance(applicationContext)
+            val syncResult = offlineQueue.syncQueuedAlerts()
+            if (syncResult.synced > 0) {
+                Log.i("KioskService", "✅ Synced ${syncResult.synced} offline alerts")
+            }
+        } catch (e: Exception) {
+            Log.e("KioskService", "Offline sync sub-task failed", e)
+        }
+
+        val status = response["status"] as? String
+        val isBadStatus = status?.equals("LOCKED", ignoreCase = true) == true ||
+                         status?.equals("COMPROMISED", ignoreCase = true) == true ||
+                         status?.equals("BREACH", ignoreCase = true) == true
+        if (isBadStatus) {
+            Log.w("KioskService", "🚨 Backend requested LOCK (status=$status)")
+            val lockIntent = Intent(applicationContext, com.example.hotel.ui.LockActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            startActivity(lockIntent)
         }
     }
 
@@ -1090,9 +1171,10 @@ data class NetworkIdentity(
     val isConnected: Boolean
 )
 
-enum class NetworkStatus { // ← NEW: Status for network connection
+enum class NetworkStatus {
     CORRECT_NETWORK,
     WRONG_NETWORK,
     WIFI_OFF,
-    UNKNOWN
+    UNKNOWN,
+    STABILIZING   // ← WiFi just connected; SSID not yet readable — skip check
 }
