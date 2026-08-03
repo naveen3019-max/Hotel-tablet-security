@@ -1,7 +1,15 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("kotlin-kapt")
+}
+
+// ─── Load signing credentials from keystore.properties ───────────────────────
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) load(keystorePropsFile.inputStream())
 }
 
 android {
@@ -12,13 +20,25 @@ android {
         applicationId = "com.example.hotel"
         minSdk = 23
         targetSdk = 34
-        versionCode = 6
-        versionName = "2.6.0"
+        versionCode = 7
+        versionName = "2.7.0"
+    }
+
+    // ─── Signing config ───────────────────────────────────────────────────────
+    signingConfigs {
+        create("release") {
+            storeFile     = file(keystoreProps["storeFile"] as String)
+            storePassword = keystoreProps["storePassword"] as String
+            keyAlias      = keystoreProps["keyAlias"]      as String
+            keyPassword   = keystoreProps["keyPassword"]   as String
+        }
     }
 
     buildTypes {
         getByName("release") {
             isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
