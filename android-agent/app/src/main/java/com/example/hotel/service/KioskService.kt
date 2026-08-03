@@ -121,7 +121,10 @@ class KioskService : Service() {
         // may still read as "" or "<unknown ssid>".
         @Volatile var wifiTurnedOnAt = 0L
         @Volatile var wifiStabilized = false
-        const val WIFI_STABILIZE_DELAY = 10_000L // 10 seconds
+        // ← FIX: skip one network check after WiFi restores to prevent
+        // false "wrong network" breach during SSID propagation delay.
+        @Volatile var skipNextNetworkCheck = false
+        const val WIFI_STABILIZE_DELAY = 20_000L // 20 seconds
     }
 
     private val alarmManager by lazy {
@@ -713,6 +716,15 @@ class KioskService : Service() {
     }
 
     private fun checkCurrentNetwork(): NetworkStatus {
+        // ← FIX: After WiFi reconnect, skip one check to let SSID fully
+        // propagate. ScreenAndWiFiReceiver sets this on WIFI_STATE_ENABLED.
+        if (skipNextNetworkCheck) {
+            skipNextNetworkCheck = false
+            Log.d("KioskService",
+                "⏭ Skipping network check (post-recovery stabilization)")
+            return NetworkStatus.CORRECT_NETWORK
+        }
+
         val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
 
         val authorizedSsid  = prefs.getString("authorized_ssid",  "") ?: ""
@@ -892,6 +904,26 @@ class KioskService : Service() {
     }
 
     private fun triggerWrongNetworkBreach() {
+        // ← FIX: Only fire if WiFi has been stable for longer than
+        // WIFI_STABILIZE_DELAY. During the reconnect window the SSID may
+        // not yet be readable, causing a false wrong-network breach.
+        val timeSinceConnect = SystemClock.elapsedRealtime() - wifiTurnedOnAt
+        if (wifiTurnedOnAt > 0L && timeSinceConnect < WIFI_STABILIZE_DELAY) {
+            Log.d("KioskService",
+                "⏭ Wrong-network check too soon after connect "
+                + "(${timeSinceConnect}ms < ${WIFI_STABILIZE_DELAY}ms) "
+                + "— skipping to avoid false breach")
+            return
+        }
+
+        // ← FIX: If SixSignalMonitor already fired a WiFi-OFF breach,
+        // don't also fire a wrong-network breach on the same reconnect.
+        if (com.example.hotel.security.SixSignalMonitor.isBreachActive) {
+            Log.d("KioskService",
+                "⏭ Breach already active — skipping wrong-network breach")
+            return
+        }
+
         val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
         val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
         val authorizedNetId = prefs.getInt("authorized_net_id", -1)

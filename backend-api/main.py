@@ -226,9 +226,15 @@ async def monitor_device_heartbeats():
     """Background task to detect devices that stop sending heartbeats (WiFi OFF)"""
     logger.info("🔍 Starting heartbeat monitoring task for WiFi OFF detection")
     
-    # Heartbeat timeout: 35 seconds
-    # (devices send heartbeats every 10 seconds. 35s provides a safe buffer for network jitter)
-    OFFLINE_THRESHOLD_SECONDS = 120
+    # Heartbeat timeout: 180 seconds
+    # Android retries for up to ~30s (15 attempts). Render cold-start adds ~30s.
+    # 180s gives a 120s safety margin before the backend fires its own breach,
+    # ensuring the Android direct-POST always wins the race.
+    OFFLINE_THRESHOLD_SECONDS = 180
+    
+    # Dedup window: if a breach alert was already created within this many
+    # seconds (from any source), skip creating another one.
+    BREACH_DEDUP_SECONDS = 300  # 5 minutes
     
     while True:
         try:
@@ -254,11 +260,38 @@ async def monitor_device_heartbeats():
                 current_status = device.get("status", StatusEnum.ok)
                 last_seen = device.get("last_seen")
                 
-                # Only trigger breach for devices that were previously OK or offline
+                # ── DEDUP GUARD 1: Skip if device is already in breach status.
+                # Android already sent the breach POST directly.
+                # Creating another one here would be a duplicate.
                 if current_status == StatusEnum.breach:
-                    continue  # skip duplicate alert if already breached
+                    logger.info(
+                        f"Device {device_id} already in breach status — "
+                        f"skipping heartbeat timeout breach "
+                        f"(Android already reported it directly)"
+                    )
+                    continue
 
-                if current_status in [StatusEnum.ok, StatusEnum.offline, StatusEnum.breach]:
+                if current_status in [StatusEnum.ok, StatusEnum.offline]:
+                    # ── DEDUP GUARD 2: Check if a breach alert was already
+                    # created within the last 5 minutes for this device.
+                    # This catches the race where Android's direct POST
+                    # succeeded and set status=breach, but the cursor had
+                    # already loaded this device before the status update.
+                    import datetime as dt
+                    recent_cutoff = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(seconds=BREACH_DEDUP_SECONDS)
+                    recent_breach = await alerts_collection.find_one({
+                        "deviceId": device_id,
+                        "type": "breach",
+                        "ts": {"$gte": recent_cutoff}
+                    })
+                    if recent_breach:
+                        logger.info(
+                            f"Recent breach already exists for {device_id} "
+                            f"(within {BREACH_DEDUP_SECONDS}s) — "
+                            f"skipping heartbeat timeout duplicate"
+                        )
+                        continue
+
                     # Ensure last_seen is timezone-aware for comparison
                     if last_seen and last_seen.tzinfo is None:
                         # MongoDB stores UTC as naive datetime
@@ -282,59 +315,54 @@ async def monitor_device_heartbeats():
                         {"$set": {"status": StatusEnum.breach}}
                     )
                     
-                    # Prevent breach spam for same device
-                    # Only create breach if device was NOT
-                    # already in breach status
-                    if current_status not in [StatusEnum.breach, StatusEnum.compromised]:
-                        # Create dynamic breach message
-                        rssi_val = device.get("rssi", -127)
-                        if rssi_val <= -120 or rssi_val is None:
-                            breach_msg = f"WiFi disabled on device (RSSI: {rssi_val} dBm)"
-                        else:
-                            breach_msg = f"No heartbeat for {int(seconds_since_heartbeat)}s (RSSI last seen: {rssi_val} dBm)"
+                    # Create dynamic breach message
+                    rssi_val = device.get("rssi", -127)
+                    if rssi_val <= -120 or rssi_val is None:
+                        breach_msg = f"WiFi disabled on device (RSSI: {rssi_val} dBm)"
+                    else:
+                        breach_msg = f"No heartbeat for {int(seconds_since_heartbeat)}s (RSSI last seen: {rssi_val} dBm)"
 
-                        # Create breach alert
-                        await alerts_collection.insert_one({
-                            "deviceId": device_id,
-                            "roomId": device.get("roomId", device.get("room_id", "unknown")),
-                            "type": "breach",
-                            "severity": "high",
-                            "message": breach_msg,
-                            "rssi": rssi_val,
-                            "bssid": device.get("bssid", "unknown"),
-                            "ts": now,
-                            "acknowledged": False,
-                            "source": "heartbeat_timeout"
-                        })
-                        
-                        # Broadcast alert to dashboard
-                        # ← ADD hotel_id lookup
-                        device_doc = await devices_collection.find_one({"_id": device_id})
-                        device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
-                        await broadcast_event("alert", {
-                            "type": "breach",
-                            "deviceId": device_id,
-                            "roomId": device.get("roomId", device.get("room_id", "unknown")),
-                            "rssi": rssi_val,
-                            "bssid": device.get("bssid", "unknown"),
-                            "source": "heartbeat_timeout",
-                            "message": breach_msg
-                        }, hotel_id=device_hotel_id) # ← ADD hotel_id
-                        
-                        # Send mobile notification
-                        asyncio.create_task(
-                            NotificationService.send_breach_alert(
-                                device_id,
-                                device.get("roomId", device.get("room_id", "unknown")),
-                                device.get("rssi", -127)
-                            )
+                    # Create breach alert
+                    await alerts_collection.insert_one({
+                        "deviceId": device_id,
+                        "roomId": device.get("roomId", device.get("room_id", "unknown")),
+                        "type": "breach",
+                        "severity": "high",
+                        "message": breach_msg,
+                        "rssi": rssi_val,
+                        "bssid": device.get("bssid", "unknown"),
+                        "ts": now,
+                        "acknowledged": False,
+                        "source": "heartbeat_timeout"
+                    })
+                    
+                    # Broadcast alert to dashboard
+                    device_doc = await devices_collection.find_one({"_id": device_id})
+                    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+                    await broadcast_event("alert", {
+                        "type": "breach",
+                        "deviceId": device_id,
+                        "roomId": device.get("roomId", device.get("room_id", "unknown")),
+                        "rssi": rssi_val,
+                        "bssid": device.get("bssid", "unknown"),
+                        "source": "heartbeat_timeout",
+                        "message": breach_msg
+                    }, hotel_id=device_hotel_id)
+                    
+                    # Send mobile notification
+                    asyncio.create_task(
+                        NotificationService.send_breach_alert(
+                            device_id,
+                            device.get("roomId", device.get("room_id", "unknown")),
+                            device.get("rssi", -127)
                         )
-                        
-                        import datetime as dt
-                        await devices_collection.update_one(
-                            {"_id": device_id},
-                            {"$set": {"last_breach_alert_time": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)}}
-                        )
+                    )
+                    
+                    import datetime as dt
+                    await devices_collection.update_one(
+                        {"_id": device_id},
+                        {"$set": {"last_breach_alert_time": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)}}
+                    )
                     
         except Exception as e:
             logger.error(f"Error in heartbeat monitoring: {e}")

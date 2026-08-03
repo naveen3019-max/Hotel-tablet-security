@@ -88,6 +88,10 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                             // Reset stabilization so KioskService timer starts fresh
                             KioskService.wifiTurnedOnAt = 0L
                             KioskService.wifiStabilized = false
+                            // ← FIX: skip the first network check after WiFi reconnects
+                            // so a transient SSID read of "" or UNKNOWN doesn't trigger
+                            // a false wrong-network breach.
+                            KioskService.skipNextNetworkCheck = true
 
                             // Reset breach active flag so SixSignalMonitor loss timer
                             // doesn't carry over a stale state from when WiFi was off
