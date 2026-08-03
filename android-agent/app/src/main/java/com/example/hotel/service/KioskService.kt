@@ -384,18 +384,10 @@ class KioskService : Service() {
                 } catch (e: Exception) {
                     Log.e("KioskService", "❌ Breach alert failed: ${e.javaClass.simpleName}: ${e.message}")
                     Log.e("KioskService", "Full stack trace:", e)
-                    try {
-                        Log.d("KioskService", "💾 Queuing breach alert for later sync...")
-                        OfflineQueueManager.getInstance(applicationContext).queueAlert(
-                            type = "breach",
-                            deviceId = deviceId,
-                            roomId = roomId,
-                            payload = mapOf("rssi" to currentRssi)
-                        )
-                        Log.d("KioskService", "✅ Breach alert queued offline successfully")
-                    } catch (queueEx: Exception) {
-                        Log.e("KioskService", "❌ Failed to queue breach alert", queueEx)
-                    }
+                    // DO NOT queue breach alerts offline. If WiFi is lost, the backend's
+                    // Heartbeat Timeout will catch it. Queuing a breach here and syncing it
+                    // when WiFi reconnects causes a false-positive duplicate breach.
+                    Log.d("KioskService", "Not queuing breach offline to prevent reconnect duplicates.")
                 }
             }
 

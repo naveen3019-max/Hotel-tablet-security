@@ -259,9 +259,10 @@ class SixSignalMonitor(private val context: Context) {
                     clearPendingBreach()
                 } else {
                     // ALL 15 attempts failed — WiFi is truly off (no mobile data path)
-                    // Save as pending so it is re-sent when connectivity returns.
-                    Log.w(TAG, "⚠️ All 15 breach POST attempts failed — saving pending breach")
-                    savePendingBreach(rssi, breachTimestamp)
+                    // DO NOT save as pending. The backend Heartbeat Timeout will detect
+                    // this offline state. Saving and sending it later upon reconnect
+                    // causes a false duplicate breach.
+                    Log.w(TAG, "⚠️ All 15 breach POST attempts failed — ignoring to prevent reconnect duplicates")
                 }
 
             } finally {

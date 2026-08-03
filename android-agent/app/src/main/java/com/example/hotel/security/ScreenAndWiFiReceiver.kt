@@ -104,30 +104,12 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
                             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(si)
                             else context.startService(si)
 
-                            // Wait 5 seconds for network to stabilize, then:
-                            //   a) Send any pending breach that was saved when WiFi was off
-                            //   b) Send a recovery heartbeat once the pending breach is clear
+                            // Wait 5 seconds for network to stabilize, then send a recovery
+                            // heartbeat. We no longer send "pending breaches" here, as the
+                            // backend's Heartbeat Timeout will have already caught the offline
+                            // state, and sending one now creates a false duplicate breach.
                             Handler(Looper.getMainLooper()).postDelayed({
-                                val prefs = context.getSharedPreferences(
-                                    "hotel_prefs", Context.MODE_PRIVATE
-                                )
-                                val hasPending = prefs.getBoolean("pending_breach", false)
-
-                                val monitor = SixSignalMonitor.getInstance()
-                                if (hasPending && monitor != null) {
-                                    Log.i(TAG, "WiFi ON: pending breach found — sending now")
-                                    monitor.sendPendingBreachIfExists()
-                                } else {
-                                    Log.d(TAG, "WiFi ON: no pending breach — skipping")
-                                }
-
-                                // Recovery heartbeat: delay further if we just sent a pending
-                                // breach, so the dashboard sees breach → clear in order.
-                                val recoveryDelay = if (hasPending) 8_000L else 2_000L
-                                Handler(Looper.getMainLooper()).postDelayed({
-                                    Thread { sendRecoveryHeartbeat(context) }.start()
-                                }, recoveryDelay)
-
+                                Thread { sendRecoveryHeartbeat(context) }.start()
                             }, 5_000L)  // 5-second stabilization delay
                         }
                     }

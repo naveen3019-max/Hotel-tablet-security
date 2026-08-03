@@ -226,11 +226,9 @@ async def monitor_device_heartbeats():
     """Background task to detect devices that stop sending heartbeats (WiFi OFF)"""
     logger.info("🔍 Starting heartbeat monitoring task for WiFi OFF detection")
     
-    # Heartbeat timeout: 180 seconds
-    # Android retries for up to ~30s (15 attempts). Render cold-start adds ~30s.
-    # 180s gives a 120s safety margin before the backend fires its own breach,
-    # ensuring the Android direct-POST always wins the race.
-    OFFLINE_THRESHOLD_SECONDS = 180
+    # Heartbeat timeout: 120 seconds
+    # (devices send heartbeats every 10 seconds. 120s provides a safe buffer for network jitter)
+    OFFLINE_THRESHOLD_SECONDS = 120
     
     # Dedup window: if a breach alert was already created within this many
     # seconds (from any source), skip creating another one.
