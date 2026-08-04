@@ -19,10 +19,20 @@ class BreachAlarmManager(private val context: Context) {
 
     companion object {
         const val CHANNEL_ID = "breach_alarm"
-        const val NOTIFICATION_ID = 9001
         const val ACTION_ACKNOWLEDGE = "com.hotel.security.dashboard.ACKNOWLEDGE"
         const val REPEAT_INTERVAL_MS = 30_000L
         const val EXTRA_ALERT_ID = "alertId"
+        
+        // ← FIXED: Generate unique notification ID per device
+        fun getNotificationId(deviceId: String): Int {
+            return Math.abs(deviceId.hashCode()) + 2000
+        }
+
+        // ← Track active breach count for the group summary
+        private var activeBreachCount = 0
+        fun getActiveBreachCount(): Int {
+            return ++activeBreachCount
+        }
         
         @Volatile
         private var ringtone: Ringtone? = null
@@ -31,33 +41,41 @@ class BreachAlarmManager(private val context: Context) {
     }
 
     fun startBreachAlarm(alertId: String, deviceId: String, roomId: String, message: String) {
-        if (isActive) stopBreachAlarm()  // cancel any previous alarm first
-        isActive = true
+        // Do not stop the sound loop if it's already active, just let it keep playing
+        if (!isActive) {
+            isActive = true
+            alarmHandler = Handler(Looper.getMainLooper())
+            val repeatRunnable = object : Runnable {
+                override fun run() {
+                    if (!isActive) return
+                    playAlarmSound()
+                    alarmHandler?.postDelayed(this, REPEAT_INTERVAL_MS)
+                }
+            }
+            playAlarmSound()  // play immediately
+            alarmHandler?.postDelayed(repeatRunnable, REPEAT_INTERVAL_MS)
+        }
 
         // Show persistent non-dismissible notification
         showBreachNotification(alertId, deviceId, roomId, message)
-
-        // Start repeating alarm every 30 seconds
-        alarmHandler = Handler(Looper.getMainLooper())
-        val repeatRunnable = object : Runnable {
-            override fun run() {
-                if (!isActive) return
-                playAlarmSound()
-                alarmHandler?.postDelayed(this, REPEAT_INTERVAL_MS)
-            }
-        }
-        playAlarmSound()  // play immediately
-        alarmHandler?.postDelayed(repeatRunnable, REPEAT_INTERVAL_MS)
     }
 
-    fun stopBreachAlarm() {
+    fun stopBreachAlarm(deviceId: String? = null) {
+        // Stop the sound loop
         isActive = false
         alarmHandler?.removeCallbacksAndMessages(null)
         alarmHandler = null
         ringtone?.stop()
         ringtone = null
+        
         val nm = context.getSystemService(NotificationManager::class.java)
-        nm.cancel(NOTIFICATION_ID)
+        if (deviceId != null) {
+            nm.cancel(getNotificationId(deviceId))
+        } else {
+            // Fallback if we don't know the deviceId (e.g. legacy cancel)
+            // The dashboard app's acknowledge usually handles specific devices.
+            nm.cancelAll() // Dangerous but effective if stopping ALL alarms
+        }
     }
 
     private fun playAlarmSound() {
@@ -74,6 +92,8 @@ class BreachAlarmManager(private val context: Context) {
     private fun showBreachNotification(
         alertId: String, deviceId: String, roomId: String, message: String
     ) {
+        val notificationId = getNotificationId(deviceId)
+
         // Acknowledge PendingIntent — fires AcknowledgeReceiver
         val ackIntent = Intent(context, AcknowledgeReceiver::class.java).apply {
             action = ACTION_ACKNOWLEDGE
@@ -81,7 +101,7 @@ class BreachAlarmManager(private val context: Context) {
             putExtra("deviceId", deviceId)
         }
         val ackPendingIntent = PendingIntent.getBroadcast(
-            context, 0, ackIntent,
+            context, notificationId, ackIntent, // ← unique request code
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -93,7 +113,7 @@ class BreachAlarmManager(private val context: Context) {
             putExtra("roomId", roomId)
         }
         val openAppPendingIntent = PendingIntent.getActivity(
-            context, 1, openAppIntent,
+            context, notificationId + 10000, openAppIntent, // ← unique request code
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -117,10 +137,31 @@ class BreachAlarmManager(private val context: Context) {
                 "✓ Acknowledge",
                 ackPendingIntent
             )
+            .setNumber(getActiveBrechCount()) // ← Show count of active breaches
+            .setGroup("hotel_breaches")       // ← Group notifications together
             .build()
 
         val nm = context.getSystemService(NotificationManager::class.java)
-        nm.notify(NOTIFICATION_ID, notification)
+        nm.notify(notificationId, notification)
+
+        // ← Also show group summary notification
+        showGroupSummary()
+    }
+
+    // ← Add group summary so notifications are grouped in notification shade
+    private fun showGroupSummary() {
+        val summaryId = 1999
+        val summary = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("Hotel Security")
+            .setContentText("Multiple breach alerts")
+            .setGroup("hotel_breaches")
+            .setGroupSummary(true)  // ← Summary!
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .build()
+        
+        context.getSystemService(NotificationManager::class.java).notify(summaryId, summary)
     }
 
     fun createNotificationChannel() {

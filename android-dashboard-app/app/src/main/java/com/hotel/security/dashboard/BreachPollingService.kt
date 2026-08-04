@@ -24,12 +24,14 @@ import java.net.URL
 class BreachPollingService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
-    private var lastAlertTimestamp = ""
     private var isRunning = false
     private val POLL_INTERVAL = 30_000L // 30s
     private val BACKEND_URL = "https://hotel-tablet-security.onrender.com"
     private val CHANNEL_ID = "breach_alerts"
-    private val NOTIFICATION_ID_BASE = 2000
+    
+    // ← FIXED: track which devices already have notifications
+    private val notifiedDevices = mutableSetOf<String>()
+    private val lastNotifiedAlertId = mutableMapOf<String, String>()
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -110,33 +112,48 @@ class BreachPollingService : Service() {
             val jsonArray = JSONArray(jsonResponse)
             if (jsonArray.length() == 0) return
             
-            // Get the most recent alert
-            val latestAlert = jsonArray.getJSONObject(0)
-            val alertId = latestAlert.optString("_id", latestAlert.optString("id", ""))
-            val alertType = latestAlert.optString("type", "")
-            val deviceId = latestAlert.optString("deviceId", "Unknown")
-            val roomId = latestAlert.optString("roomId", "Unknown")
-            val message = latestAlert.optString("message", "Security alert detected")
-            val timestamp = latestAlert.optString("ts", "")
-            val acknowledged = latestAlert.optBoolean("acknowledged", false)
+            // ← Process ALL alerts not just first
+            // Show notification for each device that has a new unacknowledged breach
+            val newBreaches = mutableListOf<Triple<String, String, String>>()
+            val alertIds = mutableListOf<String>()
             
-            // Only notify for breach type alerts that are not acknowledged
-            if (alertType != "breach") return
-            if (acknowledged) return
-            
-            // Check if this is a NEW alert (newer than what we last saw)
-            if (alertId == lastAlertTimestamp) {
-                return // Already notified this alert
+            for (i in 0 until jsonArray.length()) {
+                val alert = jsonArray.getJSONObject(i)
+                
+                val alertId = alert.optString("_id", alert.optString("id", ""))
+                val alertType = alert.optString("type", "")
+                val deviceId = alert.optString("deviceId", "Unknown")
+                val roomId = alert.optString("roomId", "Unknown")
+                val message = alert.optString("message", "Security breach detected")
+                val acknowledged = alert.optBoolean("acknowledged", false)
+                
+                // ← Only breach alerts
+                if (alertType != "breach") continue
+                // ← Only unacknowledged
+                if (acknowledged) continue
+                // ← Only new alerts for this device
+                if (alertId == lastNotifiedAlertId[deviceId]) {
+                    continue
+                }
+                
+                newBreaches.add(Triple(deviceId, roomId, message))
+                alertIds.add(alertId)
+                lastNotifiedAlertId[deviceId] = alertId
             }
             
-            // New breach alert found!
-            lastAlertTimestamp = alertId
-            
-            Log.i("PollingService", "🚨 New breach: Device=$deviceId Room=$roomId")
-            
-            // Show notification on main thread
+            // ← Show notification for each new breach device
             handler.post {
-                BreachAlarmManager(applicationContext).startBreachAlarm(alertId, deviceId, roomId, message)
+                for (i in newBreaches.indices) {
+                    val breach = newBreaches[i]
+                    val alertId = alertIds[i]
+                    BreachAlarmManager(applicationContext).startBreachAlarm(
+                        alertId, breach.first, breach.second, breach.third
+                    )
+                }
+            }
+            
+            if (newBreaches.isNotEmpty()) {
+                Log.i("PollingService", "🚨 ${newBreaches.size} new breach notifications shown")
             }
             
         } catch (e: Exception) {
