@@ -137,7 +137,7 @@ class BreachAlarmManager(private val context: Context) {
                 "✓ Acknowledge",
                 ackPendingIntent
             )
-            .setNumber(getActiveBrechCount()) // ← Show count of active breaches
+            .setNumber(getActiveBreachCount()) // ← Show count of active breaches
             .setGroup("hotel_breaches")       // ← Group notifications together
             .build()
 
