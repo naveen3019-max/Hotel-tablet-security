@@ -245,12 +245,31 @@ class BreachPollingService : Service() {
         // ← Wake screen first!
         wakeScreen()
         
+        // ← Step 2: Start CONTINUOUS alarm sound
+        // This plays until explicitly stopped
+        startAlarmSound()
+        
         val title = "🚨 BREACH - Room $roomId"
         val body = "$deviceId: $message"
         
         // ← Step 2: Unique ID per device
         val notificationId = Math.abs(deviceId.hashCode()) + 2000
         
+        // ← Step 3: Create STOP ALARM action
+        // When user taps this button alarm stops
+        val stopAlarmIntent = Intent(
+            this,
+            AlarmSoundService::class.java
+        ).apply {
+            action = "STOP_ALARM"
+        }
+        val stopAlarmPendingIntent = PendingIntent.getService(
+            this,
+            notificationId + 1000,
+            stopAlarmIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         // ← Step 3: Intent to open app
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -272,8 +291,7 @@ class BreachPollingService : Service() {
             .setContentText(body)
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("$body\n\nTap to view dashboard")
-                    .setBigContentTitle(title)
+                    .bigText("$body\n\nTap SILENCE to stop alarm")
             )
             // ← MAX priority
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -281,12 +299,14 @@ class BreachPollingService : Service() {
                 // ← Use ALARM category for maximum interruption
                 NotificationCompat.CATEGORY_ALARM
             )
-            .setAutoCancel(true)
+            .setAutoCancel(false) // ← Should not auto cancel since it's an alarm
             .setContentIntent(pendingIntent)
-            // ← Strong vibration pattern
-            .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500, 200, 500))
-            // ← Notification sound (not alarm)
-            .setSound(getAlertSound())
+            // ← NO sound in notification
+            // AlarmSoundService handles sound
+            .setSound(null)
+            // ← NO vibration in notification
+            // AlarmSoundService handles vibration
+            .setVibrate(null)
             .setColor(Color.RED)
             .setColorized(true)
             // ← Full screen = shows over lockscreen
@@ -295,9 +315,21 @@ class BreachPollingService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setLights(Color.RED, 300, 300)
             // ← Keep showing until dismissed
-            .setOngoing(false)
+            .setOngoing(true) // ← Cannot swipe away!
             // ← Group all breach notifications
             .setGroup("hotel_breaches")
+            // ← Add SILENCE button to notification
+            .addAction(
+                android.R.drawable.ic_lock_silent_mode,
+                "🔕 SILENCE ALARM",
+                stopAlarmPendingIntent
+            )
+            // ← Add VIEW DASHBOARD button
+            .addAction(
+                android.R.drawable.ic_menu_view,
+                "📱 VIEW DASHBOARD",
+                pendingIntent
+            )
             // ← Show time of breach
             .setShowWhen(true)
             .setWhen(System.currentTimeMillis())
@@ -323,6 +355,40 @@ class BreachPollingService : Service() {
         // ← Step 6: Show group summary
         showGroupSummary()
     }
+
+    private fun startAlarmSound() {
+        try {
+            // ← Start AlarmSoundService
+            val intent = Intent(
+                this,
+                AlarmSoundService::class.java
+            )
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Log.i("PollingService", "✅ Alarm sound service started")
+        } catch (e: Exception) {
+            Log.e("PollingService", "Alarm start failed: $e")
+        }
+    }
+
+    fun stopAlarmSound() {
+        try {
+            val intent = Intent(
+                this,
+                AlarmSoundService::class.java
+            ).apply {
+                action = "STOP_ALARM"
+            }
+            startService(intent)
+            Log.i("PollingService", "🔕 Alarm sound stopped")
+        } catch (e: Exception) {
+            Log.e("PollingService", "Alarm stop failed: $e")
+        }
+    }
+
 
     private fun showGroupSummary() {
         val summaryNotification = NotificationCompat.Builder(this, CHANNEL_ID)

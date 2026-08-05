@@ -241,6 +241,10 @@ class MainActivity : AppCompatActivity() {
     private fun handleNotificationIntent(intent: Intent?) {
         val deviceId = intent?.getStringExtra("deviceId")
         if (deviceId != null) {
+            // ← Opened from breach notification
+            // Stop the alarm sound
+            stopAlarmFromActivity()
+            
             // Opened from breach notification
             webView.loadUrl(DASHBOARD_URL)
             
@@ -314,5 +318,20 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         handleNotificationIntent(intent)
+    }
+
+    private fun stopAlarmFromActivity() {
+        try {
+            val intent = Intent(
+                this,
+                AlarmSoundService::class.java
+            ).apply {
+                action = "STOP_ALARM"
+            }
+            startService(intent)
+            Log.i("MainActivity", "🔕 Alarm stopped from activity")
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Stop alarm failed: $e")
+        }
     }
 }
