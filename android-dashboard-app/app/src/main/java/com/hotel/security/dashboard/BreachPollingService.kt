@@ -223,15 +223,49 @@ class BreachPollingService : Service() {
                 }
             }
             
-            // ← Show notification for each
-            handler.post {
-                for (breach in newBreaches) {
-                    showBreachNotification(
-                        breach.deviceId,
-                        breach.roomId,
-                        breach.message,
-                        breach.alertId
-                    )
+            // ← Build notifications in background
+            // Only the final notify() needs main thread
+            for (breach in newBreaches) {
+                // Build everything in this thread
+                val notification = buildNotification(breach)
+                val notificationId = Math.abs(
+                    breach.deviceId.hashCode()) + 2000
+                
+                // ← Switch to main thread ONLY for notify
+                handler.post {
+                    // ← Show notification immediately
+                    try {
+                        if (isXiaomi()) {
+                            // Xiaomi needs explicit channel ID and notification manager restart
+                            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                            nm.cancel(notificationId)
+                            Thread.sleep(100)
+                            nm.notify(notificationId, notification)
+                        } else {
+                            NotificationManagerCompat
+                                .from(this)
+                                .notify(notificationId,
+                                    notification)
+                        }
+                        Log.i("PollingService", "✅ Notification shown FIRST: ${breach.deviceId}")
+                    } catch (e: Exception) {
+                        Log.e("PollingService", "Notification error: $e")
+                    }
+                    
+                    // ← Show group summary
+                    showGroupSummary()
+                    
+                    // ← Wake screen AFTER notification
+                    // Notification already queued to show
+                    wakeScreen()
+                    
+                    // ← Start alarm LAST
+                    // Notification is already showing
+                    // Alarm and notification appear together
+                    Handler(Looper.getMainLooper())
+                        .postDelayed({
+                        startAlarmSound()
+                    }, 300L) // 300ms after notification
                 }
             }
             
@@ -300,33 +334,23 @@ class BreachPollingService : Service() {
             Build.MANUFACTURER.lowercase().contains("redmi")
     }
 
-    private fun showBreachNotification(
-        deviceId: String,
-        roomId: String,
-        message: String,
-        alertId: String
-    ) {
-        // ← Wake screen first!
-        wakeScreen()
+    private fun buildNotification(
+        breach: BreachAlert
+    ): android.app.Notification {
+        val title = "🚨 BREACH - Room ${breach.roomId}"
+        val body = "${breach.deviceId}: ${breach.message}"
         
-        // ← Step 2: Start CONTINUOUS alarm sound
-        // This plays until explicitly stopped
-        startAlarmSound()
+        // ← Unique ID per device
+        val notificationId = Math.abs(breach.deviceId.hashCode()) + 2000
         
-        val title = "🚨 BREACH - Room $roomId"
-        val body = "$deviceId: $message"
-        
-        // ← Step 2: Unique ID per device
-        val notificationId = Math.abs(deviceId.hashCode()) + 2000
-        
-        // ← NEW/FIXED: Create ACK intent
+        // ← STEP 1: Build ACK intent
         val ackIntent = Intent(
             this,
             AcknowledgeReceiver::class.java
         ).apply {
-            putExtra("alertId", alertId)
-            putExtra("deviceId", deviceId)
-            putExtra("roomId", roomId)
+            putExtra("alertId", breach.alertId)
+            putExtra("deviceId", breach.deviceId)
+            putExtra("roomId", breach.roomId)
             putExtra("notificationId", notificationId)
         }
         val ackPendingIntent = PendingIntent
@@ -338,22 +362,22 @@ class BreachPollingService : Service() {
                 PendingIntent.FLAG_IMMUTABLE
             )
 
-        // ← Step 3: Intent to open app
+        // ← STEP 2: Build open app intent
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("deviceId", deviceId)
-            putExtra("roomId", roomId)
+            putExtra("deviceId", breach.deviceId)
+            putExtra("roomId", breach.roomId)
         }
         
-        val pendingIntent = PendingIntent.getActivity(
+        val openPendingIntent = PendingIntent.getActivity(
             this,
             notificationId,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
-        // ← Step 4: Build notification
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        // ← STEP 3: Build notification
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle(title)
             .setContentText(body)
@@ -368,7 +392,7 @@ class BreachPollingService : Service() {
                 NotificationCompat.CATEGORY_ALARM
             )
             .setAutoCancel(false) // ← Should not auto cancel since it's an alarm
-            .setContentIntent(pendingIntent)
+            .setContentIntent(openPendingIntent)
             // ← NO sound in notification
             // AlarmSoundService handles sound
             .setSound(null)
@@ -378,7 +402,7 @@ class BreachPollingService : Service() {
             .setColor(Color.RED)
             .setColorized(true)
             // ← Full screen = shows over lockscreen
-            .setFullScreenIntent(pendingIntent, true)
+            .setFullScreenIntent(openPendingIntent, true)
             // ← Show on lockscreen
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setLights(Color.RED, 300, 300)
@@ -386,7 +410,7 @@ class BreachPollingService : Service() {
             .setOngoing(true) // ← Cannot swipe away!
             // ← Group all breach notifications
             .setGroup("hotel_breaches")
-            // ← NEW/FIXED: Add ACKNOWLEDGE button to notification
+            // ← Add ACKNOWLEDGE button to notification
             .addAction(
                 android.R.drawable.ic_menu_send,
                 "✅ ACKNOWLEDGE",
@@ -396,32 +420,12 @@ class BreachPollingService : Service() {
             .addAction(
                 android.R.drawable.ic_menu_view,
                 "📱 VIEW DASHBOARD",
-                pendingIntent
+                openPendingIntent
             )
             // ← Show time of breach
             .setShowWhen(true)
             .setWhen(System.currentTimeMillis())
             .build()
-        
-        // ← Step 5: Show notification
-        try {
-            // ← Xiaomi specific fix
-            if (isXiaomi()) {
-                // Xiaomi needs explicit channel ID and notification manager restart
-                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                nm.cancel(notificationId)
-                Thread.sleep(100)
-                nm.notify(notificationId, notification)
-            } else {
-                NotificationManagerCompat.from(this).notify(notificationId, notification)
-            }
-            Log.i("PollingService", "✅ Breach notification shown: $title (ID=$notificationId)")
-        } catch (e: Exception) {
-            Log.e("PollingService", "Notification failed: $e")
-        }
-        
-        // ← Step 6: Show group summary
-        showGroupSummary()
     }
 
     private fun startAlarmSound() {
