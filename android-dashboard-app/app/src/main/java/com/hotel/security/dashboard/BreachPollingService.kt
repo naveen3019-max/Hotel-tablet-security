@@ -147,50 +147,109 @@ class BreachPollingService : Service() {
         }.start()
     }
 
-    private fun processAlerts(jsonResponse: String) {
+    private fun processAlerts(
+        jsonResponse: String
+    ) {
         try {
             val jsonArray = JSONArray(jsonResponse)
             if (jsonArray.length() == 0) return
             
-            val newBreaches = mutableListOf<Triple<String, String, String>>()
-            val alertIds = mutableListOf<String>()
+            val newBreaches = mutableListOf<BreachAlert>()
             
             for (i in 0 until jsonArray.length()) {
-                val alert = jsonArray.getJSONObject(i)
+                val alert = jsonArray
+                    .getJSONObject(i)
                 
-                val alertId = alert.optString("_id", alert.optString("id", ""))
-                val alertType = alert.optString("type", "")
-                val deviceId = alert.optString("deviceId", "Unknown")
-                val roomId = alert.optString("roomId", "Unknown")
-                val message = alert.optString("message", "Security breach detected")
-                val acknowledged = alert.optBoolean("acknowledged", false)
+                val alertId = alert
+                    .optString("id", "")
+                val alertType = alert
+                    .optString("type", "")
+                val deviceId = alert
+                    .optString("deviceId", "Unknown")
+                val roomId = alert
+                    .optString("roomId", "Unknown")
+                val message = alert.optString(
+                    "message",
+                    "Security breach detected")
+                val acknowledged = alert
+                    .optBoolean("acknowledged", false)
                 
+                // ← Only process breach alerts
                 if (alertType != "breach") continue
-                if (acknowledged) continue
-                if (alertId == lastNotifiedAlertId[deviceId]) {
+                
+                // ← NEW/FIXED: Skip if acknowledged in backend
+                if (acknowledged) {
+                    // ← Also remove from local
+                    // tracking if was notified
+                    acknowledgedAlertIds.add(alertId)
+                    // ← Dismiss notification
+                    // for this device
+                    dismissNotificationForDevice(
+                        deviceId)
                     continue
                 }
                 
-                newBreaches.add(Triple(deviceId, roomId, message))
-                alertIds.add(alertId)
-                lastNotifiedAlertId[deviceId] = alertId
-            }
-            
-            handler.post {
-                for (i in newBreaches.indices) {
-                    val breach = newBreaches[i]
-                    val alertId = alertIds[i]
-                    showBreachNotification(breach.first, breach.second, breach.third)
+                // ← NEW/FIXED: Skip if acknowledged locally
+                // (tapped ACK in notification)
+                if (alertId.isNotEmpty() &&
+                    acknowledgedAlertIds
+                        .contains(alertId)) {
+                    Log.d("PollingService",
+                        "Skipping locally acked: " +
+                        "$alertId")
+                    continue
+                }
+                
+                // ← NEW/FIXED: Skip if same alert already shown
+                if (alertId.isNotEmpty() &&
+                    lastShownAlertId[deviceId] == 
+                    alertId) {
+                    Log.d("PollingService",
+                        "Already shown: $alertId")
+                    continue
+                }
+                
+                // ← New unacknowledged breach!
+                newBreaches.add(BreachAlert(
+                    alertId = alertId,
+                    deviceId = deviceId,
+                    roomId = roomId,
+                    message = message
+                ))
+                
+                if (alertId.isNotEmpty()) {
+                    lastShownAlertId[deviceId] = 
+                        alertId
                 }
             }
             
-            if (newBreaches.isNotEmpty()) {
-                Log.i("PollingService", "🚨 ${newBreaches.size} new breach notifications shown")
+            // ← Show notification for each
+            handler.post {
+                for (breach in newBreaches) {
+                    showBreachNotification(
+                        breach.deviceId,
+                        breach.roomId,
+                        breach.message,
+                        breach.alertId
+                    )
+                }
             }
             
         } catch (e: Exception) {
-            Log.e("PollingService", "Parse error: ${e.message}")
+            Log.e("PollingService",
+                "Parse error: ${e.message}")
         }
+    }
+
+    private fun dismissNotificationForDevice(
+        deviceId: String
+    ) {
+        val notificationId = Math.abs(
+            deviceId.hashCode()) + 2000
+        NotificationManagerCompat.from(this)
+            .cancel(notificationId)
+        Log.d("PollingService",
+            "Notification dismissed for: $deviceId")
     }
 
     private fun wakeScreen() {
@@ -241,7 +300,12 @@ class BreachPollingService : Service() {
             Build.MANUFACTURER.lowercase().contains("redmi")
     }
 
-    private fun showBreachNotification(deviceId: String, roomId: String, message: String) {
+    private fun showBreachNotification(
+        deviceId: String,
+        roomId: String,
+        message: String,
+        alertId: String
+    ) {
         // ← Wake screen first!
         wakeScreen()
         
@@ -255,20 +319,24 @@ class BreachPollingService : Service() {
         // ← Step 2: Unique ID per device
         val notificationId = Math.abs(deviceId.hashCode()) + 2000
         
-        // ← Step 3: Create STOP ALARM action
-        // When user taps this button alarm stops
-        val stopAlarmIntent = Intent(
+        // ← NEW/FIXED: Create ACK intent
+        val ackIntent = Intent(
             this,
-            AlarmSoundService::class.java
+            AcknowledgeReceiver::class.java
         ).apply {
-            action = "STOP_ALARM"
+            putExtra("alertId", alertId)
+            putExtra("deviceId", deviceId)
+            putExtra("roomId", roomId)
+            putExtra("notificationId", notificationId)
         }
-        val stopAlarmPendingIntent = PendingIntent.getService(
-            this,
-            notificationId + 1000,
-            stopAlarmIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val ackPendingIntent = PendingIntent
+            .getBroadcast(
+                this,
+                notificationId + 2000,
+                ackIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or
+                PendingIntent.FLAG_IMMUTABLE
+            )
 
         // ← Step 3: Intent to open app
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -291,7 +359,7 @@ class BreachPollingService : Service() {
             .setContentText(body)
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("$body\n\nTap SILENCE to stop alarm")
+                    .bigText("$body\n\nTap ACKNOWLEDGE to stop alarm")
             )
             // ← MAX priority
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -318,11 +386,11 @@ class BreachPollingService : Service() {
             .setOngoing(true) // ← Cannot swipe away!
             // ← Group all breach notifications
             .setGroup("hotel_breaches")
-            // ← Add SILENCE button to notification
+            // ← NEW/FIXED: Add ACKNOWLEDGE button to notification
             .addAction(
-                android.R.drawable.ic_lock_silent_mode,
-                "🔕 SILENCE ALARM",
-                stopAlarmPendingIntent
+                android.R.drawable.ic_menu_send,
+                "✅ ACKNOWLEDGE",
+                ackPendingIntent
             )
             // ← Add VIEW DASHBOARD button
             .addAction(
@@ -474,4 +542,21 @@ class BreachPollingService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+    
+    companion object {
+        // ← NEW/FIXED: Track acknowledged alert IDs
+        // These will NOT be re-notified
+        val acknowledgedAlertIds = mutableSetOf<String>()
+        
+        // ← NEW/FIXED: Track shown alert IDs per device
+        // Maps deviceId → last shown alertId
+        val lastShownAlertId = mutableMapOf<String, String>()
+    }
 }
+
+data class BreachAlert(
+    val alertId: String,
+    val deviceId: String,
+    val roomId: String,
+    val message: String
+)

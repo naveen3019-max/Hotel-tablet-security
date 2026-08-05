@@ -1254,20 +1254,77 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
 # Acknowledge alert with JWT
 @app.post("/api/alerts/{alert_id}/acknowledge")
 async def acknowledge_alert(alert_id: str, current_user = Depends(get_current_user)):
-    from bson.objectid import ObjectId
+    """Acknowledge a single alert by ID"""
     try:
-        obj_id = ObjectId(alert_id)
-    except:
-        obj_id = alert_id
+        from bson import ObjectId
         
-    await alerts_collection.update_one(
-        {"_id": obj_id},
-        {"$set": {"acknowledged": True, "acknowledgedAt": get_utc_naive(),
-                  "acknowledgedBy": current_user.get("sub")}}
-    )
-    # Stop sending repeat FCM for this alert
-    await broadcast_event("alert_acknowledged", {"alertId": alert_id}, hotel_id=current_user.get("hotel_id", "default"))
-    return {"status": "acknowledged"}
+        # ← Try both string ID and ObjectId
+        query = {"$or": [
+            {"_id": alert_id},
+        ]}
+        try:
+            query["$or"].append(
+                {"_id": ObjectId(alert_id)})  # type: ignore
+        except Exception:
+            pass
+        
+        result = await alerts_collection.update_one(
+            query,
+            {
+                "$set": {
+                    "acknowledged": True,
+                    "acknowledgedAt": get_utc_naive(),
+                    "acknowledgedBy": current_user.get("sub") if current_user else None
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            logger.warning(
+                f"Alert not found: {alert_id}")
+        
+        logger.info(
+            f"✅ Alert acknowledged: {alert_id}")
+            
+        # Stop sending repeat FCM for this alert
+        await broadcast_event("alert_acknowledged", {"alertId": alert_id}, hotel_id=current_user.get("hotel_id", "default") if current_user else "default")
+        return {"ok": True, "status": "acknowledged"}
+        
+    except Exception as e:
+        logger.error(f"ACK error: {e}")
+        raise HTTPException(500, str(e))
+
+@app.post("/api/alerts/acknowledge-device/{device_id}")
+async def acknowledge_device_alerts(
+    device_id: str,
+    authorization: str = Header(None)
+):
+    """Acknowledge all alerts for a device"""
+    try:
+        result = await alerts_collection.update_many(
+            {
+                "deviceId": device_id,
+                "acknowledged": False
+            },
+            {
+                "$set": {
+                    "acknowledged": True,
+                    "acknowledgedAt": get_utc_naive()
+                }
+            }
+        )
+        
+        logger.info(
+            f"✅ Acknowledged {result.modified_count}"
+            f" alerts for device {device_id}")
+        
+        return {
+            "ok": True,
+            "acknowledged": result.modified_count
+        }
+    except Exception as e:
+        logger.error(f"ACK device error: {e}")
+        raise HTTPException(500, str(e))
 
 # Battery alert with JWT
 @app.post("/api/alert/battery")
@@ -1672,6 +1729,8 @@ async def recent_alerts(limit: int = 100, since: Optional[str] = None, authoriza
             alert["ts"] = to_ist_isoformat(alert["ts"])
         if alert.get("acknowledged_at"):
             alert["acknowledged_at"] = to_ist_isoformat(alert["acknowledged_at"])
+        # ← NEW/FIXED: Ensure acknowledged field is present
+        alert["acknowledged"] = alert.get("acknowledged", False)
     
     return alerts
 
