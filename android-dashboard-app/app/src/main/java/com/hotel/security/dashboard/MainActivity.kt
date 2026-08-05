@@ -27,6 +27,13 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import android.widget.TextView
+import android.provider.Settings
+import android.net.Uri
+import android.os.PowerManager
+import android.content.Context
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.os.SystemClock
 
 class MainActivity : AppCompatActivity() {
 
@@ -59,6 +66,55 @@ class MainActivity : AppCompatActivity() {
         
         setupWebView()
         handleNotificationIntent(intent)
+        requestBatteryOptimizationExempt()
+        schedulePollingAlarm()
+    }
+    
+    private fun requestBatteryOptimizationExempt() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                    Log.i("MainActivity", "Requesting battery optimization exemption")
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Battery opt request failed: $e")
+                }
+            } else {
+                Log.i("MainActivity", "✅ Already exempt from battery optimization")
+            }
+        }
+    }
+
+    private fun schedulePollingAlarm() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        
+        val intent = Intent(this, PollingAlarmReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + 5 * 60 * 1000L,
+                pendingIntent
+            )
+        } else {
+            alarmManager.setRepeating(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + 5 * 60 * 1000L,
+                5 * 60 * 1000L,
+                pendingIntent
+            )
+        }
+        
+        Log.i("MainActivity", "✅ Polling alarm scheduled")
     }
     
     @SuppressLint("SetJavaScriptEnabled")
