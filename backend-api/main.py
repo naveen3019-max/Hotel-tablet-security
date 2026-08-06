@@ -1331,11 +1331,14 @@ async def alert_battery(b: Battery, device=Depends(get_current_device)):
         }
     )
     
+    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+    
     # Create alert
     alert_data = {
-        "type": "battery_low",
-        "device_id": b.deviceId,
-        "room_id": device_doc.get("room_id") if device_doc else None,
+        "type": "low_battery",
+        "deviceId": b.deviceId,
+        "roomId": device_doc.get("room_id") if device_doc else None,
+        "hotel_id": device_hotel_id,
         "payload": {
             "deviceId": b.deviceId,
             "level": b.level,
@@ -1348,14 +1351,12 @@ async def alert_battery(b: Battery, device=Depends(get_current_device)):
     await alerts_collection.insert_one(alert_data)
     
     # Broadcast via Redis
-    # ← ADD hotel_id lookup
-    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
-    
     await broadcast_event("alert", {
-        "type": "battery_low",
+        "type": "low_battery",
         "deviceId": b.deviceId,
+        "roomId": device_doc.get("room_id") if device_doc else None,
         "level": b.level
-    }, hotel_id=device_hotel_id) # ← ADD hotel_id
+    }, hotel_id=device_hotel_id)
     
     # Queue notification
     asyncio.create_task(
