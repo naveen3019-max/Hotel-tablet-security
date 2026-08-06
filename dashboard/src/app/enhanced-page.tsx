@@ -4,6 +4,15 @@ import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuth } from "../hooks/useAuth";
 import LiveIndicator from "../components/LiveIndicator";
 
+declare global {
+  interface Window {
+    HotelSecurityBridge?: {
+      acknowledgeAlert: (alertId: string, deviceId: string) => void;
+      acknowledgeAllAlerts: () => void;
+    };
+  }
+}
+
 const API = process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
 const DASHBOARD_VERSION = "v4.0-redesign";
 
@@ -241,7 +250,7 @@ export default function EnhancedDashboard() {
       try {
         const deviceId = alert.deviceId ?? (alert.payload?.deviceId as string);
         if (!deviceId) return;
-        const alertId = (alert as any).id || `${deviceId}_${alert.ts}`;
+        const alertId = alert.id || `${deviceId}_${alert.ts}`;
         await fetch(`${API}/api/alerts/acknowledge`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -252,9 +261,9 @@ export default function EnhancedDashboard() {
       );
       
       // Call Android native bridge to dismiss local notification and alarm
-      if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAlert) {
+      if (typeof window !== "undefined" && window.HotelSecurityBridge?.acknowledgeAlert) {
         try {
-          (window as any).HotelSecurityBridge.acknowledgeAlert(alertId, deviceId);
+          window.HotelSecurityBridge.acknowledgeAlert(alertId, deviceId);
         } catch (err) {
           console.error("Bridge acknowledge error:", err);
         }
@@ -270,9 +279,9 @@ export default function EnhancedDashboard() {
       setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
       
       // Call Android native bridge
-      if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAllAlerts) {
+      if (typeof window !== "undefined" && window.HotelSecurityBridge?.acknowledgeAllAlerts) {
         try {
-          (window as any).HotelSecurityBridge.acknowledgeAllAlerts();
+          window.HotelSecurityBridge.acknowledgeAllAlerts();
         } catch (err) {
           console.error("Bridge acknowledgeAll error:", err);
         }

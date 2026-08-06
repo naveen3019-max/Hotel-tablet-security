@@ -3,6 +3,16 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuth } from "../hooks/useAuth";
+import LiveIndicator from "../components/LiveIndicator";
+
+declare global {
+  interface Window {
+    HotelSecurityBridge?: {
+      acknowledgeAlert: (alertId: string, deviceId: string) => void;
+      acknowledgeAllAlerts: () => void;
+    };
+  }
+}
 
 const API =
   process.env.NEXT_PUBLIC_API_URL || "https://hotel-backend-zqc1.onrender.com";
@@ -778,9 +788,9 @@ export default function Dashboard() {
       setAlerts((prev) => prev.map((a) => (a === alert ? { ...a, acknowledged: true } : a)));
       
       // Call Android native bridge to dismiss local notification and alarm
-      if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAlert) {
+      if (typeof window !== "undefined" && window.HotelSecurityBridge?.acknowledgeAlert) {
         try {
-          (window as any).HotelSecurityBridge.acknowledgeAlert(alertId, deviceId);
+          window.HotelSecurityBridge.acknowledgeAlert(alertId, deviceId);
         } catch (err) {
           console.error("Bridge acknowledge error:", err);
         }
@@ -794,9 +804,9 @@ export default function Dashboard() {
       setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
       
       // Call Android native bridge
-      if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAllAlerts) {
+      if (typeof window !== "undefined" && window.HotelSecurityBridge?.acknowledgeAllAlerts) {
         try {
-          (window as any).HotelSecurityBridge.acknowledgeAllAlerts();
+          window.HotelSecurityBridge.acknowledgeAllAlerts();
         } catch (err) {
           console.error("Bridge acknowledgeAll error:", err);
         }
