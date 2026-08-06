@@ -238,18 +238,15 @@ export default function EnhancedDashboard() {
   };
 
   const acknowledgeAlert = async (alert: Alert) => {
-    try {
-      const deviceId = alert.deviceId ?? (alert.payload?.deviceId as string);
-      if (!deviceId) return;
-      await fetch(`${API}/api/alerts/acknowledge`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          device_id: deviceId,
-          timestamp: alert.ts,
-          notes: "Acknowledged from dashboard",
-        }),
-      });
+      try {
+        const deviceId = alert.deviceId ?? (alert.payload?.deviceId as string);
+        if (!deviceId) return;
+        const alertId = (alert as any).id || `${deviceId}_${alert.ts}`;
+        await fetch(`${API}/api/alerts/acknowledge`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ alertId: alertId, deviceId: deviceId }),
+        });
       setAlerts((prev: Alert[]) =>
         prev.map((a: Alert) => (a === alert ? { ...a, acknowledged: true } : a))
       );
@@ -257,7 +254,6 @@ export default function EnhancedDashboard() {
       // Call Android native bridge to dismiss local notification and alarm
       if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAlert) {
         try {
-          const alertId = (alert as any).id || `${deviceId}_${alert.ts}`;
           (window as any).HotelSecurityBridge.acknowledgeAlert(alertId, deviceId);
         } catch (err) {
           console.error("Bridge acknowledge error:", err);

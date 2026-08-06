@@ -425,6 +425,12 @@ class AlertAcknowledge(BaseModel):
     acknowledgedBy: str
     notes: Optional[str] = None
 
+class AcknowledgeRequest(BaseModel):
+    alertId: Optional[str] = None
+    alert_id: Optional[str] = None    # accept both naming conventions
+    deviceId: Optional[str] = None
+    device_id: Optional[str] = None
+
 # Root endpoint
 @app.get("/")
 def root():
@@ -1253,46 +1259,19 @@ async def alert_tamper(t: Tamper, device=Depends(get_current_device)):
 
 # Acknowledge alert with JWT
 @app.post("/api/alerts/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: str, current_user = Depends(get_current_user)):
-    """Acknowledge a single alert by ID"""
+async def acknowledge_alert_by_path(alert_id: str, authorization: Optional[str] = Header(None)):
     try:
-        from bson import ObjectId
-        
-        # ← Try both string ID and ObjectId
-        query = {"$or": [
-            {"_id": alert_id},
-        ]}
-        try:
-            query["$or"].append(
-                {"_id": ObjectId(alert_id)})  # type: ignore
-        except Exception:
-            pass
-        
-        result = await alerts_collection.update_one(
-            query,
-            {
-                "$set": {
-                    "acknowledged": True,
-                    "acknowledgedAt": get_utc_naive(),
-                    "acknowledgedBy": current_user.get("sub") if current_user else None
-                }
-            }
+        await alerts_collection.update_one(
+            {"_id": ObjectId(alert_id)},
+            {"$set": {"acknowledged": True, "acknowledgedAt": get_utc_naive()}}
         )
-        
-        if result.modified_count == 0:
-            logger.warning(
-                f"Alert not found: {alert_id}")
-        
-        logger.info(
-            f"✅ Alert acknowledged: {alert_id}")
-            
-        # Stop sending repeat FCM for this alert
-        await broadcast_event("alert_acknowledged", {"alertId": alert_id}, hotel_id=current_user.get("hotel_id", "default") if current_user else "default")
-        return {"ok": True, "status": "acknowledged"}
-        
-    except Exception as e:
-        logger.error(f"ACK error: {e}")
-        raise HTTPException(500, str(e))
+    except Exception:
+        await alerts_collection.update_many(
+            {"alertId": alert_id},
+            {"$set": {"acknowledged": True, "acknowledgedAt": get_utc_naive()}}
+        )
+    await broadcast_event("alert_acknowledged", {"alertId": alert_id})
+    return {"status": "acknowledged"}
 
 @app.post("/api/alerts/acknowledge-device/{device_id}")
 async def acknowledge_device_alerts(
@@ -1633,36 +1612,34 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
 
 # Alert acknowledgment
 @app.post("/api/alerts/acknowledge")
-async def acknowledge_alert(payload: AlertAcknowledge):
-    """Acknowledge an alert"""
-    result = await alerts_collection.update_one(
-        {"_id": ObjectId(payload.alertId)},
-        {
-            "$set": {
-                "acknowledged": True,
-                "acknowledged_by": payload.acknowledgedBy,
-                "acknowledged_at": get_ist_time(),
-                "notes": payload.notes
-            }
-        }
-    )
-    
-    if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Alert not found")
-    
-    # Broadcast acknowledgment
-    # ← ADD hotel_id lookup
-    alert = await alerts_collection.find_one({"_id": ObjectId(payload.alertId)})
-    device_id = alert.get("deviceId") if alert else None
-    device_doc = await devices_collection.find_one({"_id": device_id}) if device_id else None
-    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
+async def acknowledge_alert(
+    req: AcknowledgeRequest,
+    authorization: Optional[str] = Header(None)
+):
+    alert_id = req.alertId or req.alert_id
+    device_id = req.deviceId or req.device_id
 
-    await broadcast_event("alert_acknowledged", {
-        "alertId": payload.alertId,
-        "acknowledgedBy": payload.acknowledgedBy
-    }, hotel_id=device_hotel_id) # ← ADD hotel_id
-    
-    return {"ok": True}
+    if not alert_id and not device_id:
+        raise HTTPException(400, "alertId or deviceId required")
+
+    if alert_id:
+        try:
+            await alerts_collection.update_one(
+                {"_id": ObjectId(alert_id)},
+                {"$set": {"acknowledged": True, "acknowledgedAt": get_utc_naive()}}
+            )
+        except Exception as e:
+            logger.error(f"Acknowledge by alertId failed: {e}")
+
+    if device_id:
+        await alerts_collection.update_many(
+            {"deviceId": device_id, "acknowledged": {"$ne": True}},
+            {"$set": {"acknowledged": True, "acknowledgedAt": get_utc_naive()}}
+        )
+
+    await broadcast_event("alert_acknowledged", {"alertId": alert_id, "deviceId": device_id})
+    logger.info(f"Acknowledge complete: alertId={alert_id} deviceId={device_id}")
+    return {"status": "acknowledged", "alertId": alert_id, "deviceId": device_id}
 
 @app.post("/api/alerts/acknowledge-all")
 async def acknowledge_all():
