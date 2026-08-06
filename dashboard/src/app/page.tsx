@@ -3,7 +3,6 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuth } from "../hooks/useAuth";
-import LiveIndicator from "../components/LiveIndicator";
 
 declare global {
   interface Window {
