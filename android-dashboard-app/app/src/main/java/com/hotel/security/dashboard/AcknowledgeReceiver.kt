@@ -9,120 +9,145 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
-class AcknowledgeReceiver : BroadcastReceiver() {
+class AcknowledgeReceiver : 
+    BroadcastReceiver() {
     
-    override fun onReceive(context: Context, intent: Intent) {
-        val alertId = intent.getStringExtra("alertId") ?: ""
-        val deviceId = intent.getStringExtra("deviceId") ?: ""
-        val roomId = intent.getStringExtra("roomId") ?: ""
-        val notificationId = intent.getIntExtra("notificationId", 0)
+    override fun onReceive(
+        context: Context,
+        intent: Intent
+    ) {
+        if (intent.action != "ACK_BREACH") 
+            return
         
-        Log.i("AckReceiver", "✅ ACK tapped: alertId=$alertId deviceId=$deviceId")
+        val alertId = intent.getStringExtra(
+            "alertId") ?: ""
+        val deviceId = intent.getStringExtra(
+            "deviceId") ?: ""
+        val notificationId = 
+            intent.getIntExtra(
+                "notificationId", 0)
         
-        // ← NEW/FIXED: Step 1: Add to local ack set
-        // This prevents re-notification BEFORE network call succeeds
-        if (alertId.isNotEmpty()) {
-            BreachPollingService.acknowledgedAlertIds.add(alertId)
+        Log.i("AckReceiver",
+            "ACK received: device=$deviceId " +
+            "alert=$alertId")
+        
+        // ← IMMEDIATELY dismiss notification
+        try {
+            NotificationManagerCompat
+                .from(context)
+                .cancel(notificationId)
+            Log.i("AckReceiver",
+                "✅ Notification cancelled: " +
+                "$notificationId")
+        } catch (e: Exception) {
+            Log.e("AckReceiver",
+                "Cancel notif: $e")
         }
         
-        // ← NEW/FIXED: Step 2: Dismiss notification
-        NotificationManagerCompat.from(context).cancel(notificationId)
+        // ← IMMEDIATELY stop alarm
+        try {
+            context.stopService(
+                Intent(context,
+                    AlarmSoundService::class.java)
+            )
+            Log.i("AckReceiver",
+                "✅ Alarm stopped")
+        } catch (e: Exception) {
+            Log.e("AckReceiver",
+                "Stop alarm: $e")
+        }
         
-        // ← NEW/FIXED: Step 3: Stop alarm sound
-        context.startService(
-            Intent(context, AlarmSoundService::class.java).apply {
-                action = "STOP_ALARM"
-            }
+        // ← Save to SharedPreferences
+        // BEFORE network call
+        // Prevents re-show on poll
+        BreachPollingService
+            .acknowledgeLocally(
+            alertId,
+            deviceId,
+            notificationId,
+            context
         )
         
-        // ← NEW/FIXED: Step 4: Send ACK to backend
-        // Do this in background thread
+        // ← Send to backend async
         Thread {
-            sendAcknowledge(context, alertId, deviceId)
+            sendAckToBackend(
+                context, alertId, deviceId)
         }.start()
-        
-        Log.i("AckReceiver", "✅ Alert acknowledged: $deviceId")
     }
     
-    private fun sendAcknowledge(context: Context, alertId: String, deviceId: String) {
-        try {
-            val prefs = context.getSharedPreferences("hotel_dashboard_prefs", Context.MODE_PRIVATE)
-            val token = prefs.getString("auth_token", "") ?: ""
-            
-            if (token.isEmpty()) {
-                Log.w("AckReceiver", "No token — cannot ACK")
+    private fun sendAckToBackend(
+        context: Context,
+        alertId: String,
+        deviceId: String
+    ) {
+        val prefs = context
+            .getSharedPreferences(
+            "hotel_dashboard_prefs",
+            Context.MODE_PRIVATE)
+        val token = prefs.getString(
+            "auth_token", "") ?: ""
+        
+        if (token.isEmpty()) {
+            Log.w("AckReceiver", "No token")
+            return
+        }
+        
+        val baseUrl = 
+            "https://hotel-tablet-security" +
+            ".onrender.com"
+        
+        // ← Try acknowledge by alertId
+        if (alertId.isNotEmpty()) {
+            if (postRequest(
+                "$baseUrl/api/alerts" +
+                "/acknowledge/$alertId",
+                token)) {
+                Log.i("AckReceiver",
+                    "✅ Backend acked: $alertId")
                 return
             }
-            
-            val backendUrl = "https://hotel-tablet-security.onrender.com"
-            
-            // ← NEW/FIXED: Try acknowledge by alertId
-            if (alertId.isNotEmpty()) {
-                val success = postAcknowledge(backendUrl, token, alertId)
-                if (success) {
-                    Log.i("AckReceiver", "✅ ACK sent to backend")
-                    return
-                }
-            }
-            
-            // ← NEW/FIXED: Fallback: acknowledge by deviceId
-            val success = postAcknowledgeByDevice(backendUrl, token, deviceId)
-            if (success) {
-                Log.i("AckReceiver", "✅ ACK sent by device")
-            }
-            
-        } catch (e: Exception) {
-            Log.e("AckReceiver", "ACK failed: ${e.message}")
+        }
+        
+        // ← Fallback: by device
+        if (postRequest(
+            "$baseUrl/api/alerts" +
+            "/acknowledge-device/$deviceId",
+            token)) {
+            Log.i("AckReceiver",
+                "✅ Backend acked device: " +
+                "$deviceId")
         }
     }
     
-    private fun postAcknowledge(backendUrl: String, token: String, alertId: String): Boolean {
+    private fun postRequest(
+        urlStr: String,
+        token: String
+    ): Boolean {
         return try {
-            val url = URL("$backendUrl/api/alerts/acknowledge/$alertId")
-            val conn = url.openConnection() as HttpURLConnection
+            val url = URL(urlStr)
+            val conn = url.openConnection()
+                as HttpURLConnection
             conn.requestMethod = "POST"
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty(
+                "Authorization", "Bearer $token")
+            conn.setRequestProperty(
+                "Content-Type",
+                "application/json")
+            conn.doOutput = true
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
-            conn.doOutput = true
-            
-            // Empty body
-            OutputStreamWriter(conn.outputStream).use {
+            OutputStreamWriter(
+                conn.outputStream
+            ).use {
                 it.write("{}")
                 it.flush()
             }
-            
             val code = conn.responseCode
             conn.disconnect()
             code in 200..299
         } catch (e: Exception) {
-            Log.e("AckReceiver", "POST ack failed: $e")
-            false
-        }
-    }
-    
-    private fun postAcknowledgeByDevice(backendUrl: String, token: String, deviceId: String): Boolean {
-        return try {
-            val url = URL("$backendUrl/api/alerts/acknowledge-device/$deviceId")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.doOutput = true
-            
-            OutputStreamWriter(conn.outputStream).use {
-                it.write("{}")
-                it.flush()
-            }
-            
-            val code = conn.responseCode
-            conn.disconnect()
-            code in 200..299
-        } catch (e: Exception) {
-            Log.e("AckReceiver", "POST device ack failed: $e")
+            Log.e("AckReceiver",
+                "POST failed: $e")
             false
         }
     }

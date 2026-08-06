@@ -43,12 +43,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Background polling service -->
+        <!-- ← Breach polling service -->
         <service
             android:name=".BreachPollingService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" 
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="false"/>
 
         <!-- Restart service after reboot -->
@@ -61,10 +61,13 @@
             </intent-filter>
         </receiver>
         
-        <receiver android:name=".AcknowledgeReceiver"
+        <!-- ← AcknowledgeReceiver with action -->
+        <receiver
+            android:name=".AcknowledgeReceiver"
+            android:enabled="true"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.hotel.security.dashboard.ACKNOWLEDGE"/>
+                <action android:name="ACK_BREACH"/>
             </intent-filter>
         </receiver>
 
@@ -78,12 +81,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- ← Remove foregroundServiceType
+             from AlarmSoundService
+             It was causing ANR crashes -->
         <service
             android:name=".AlarmSoundService"
             android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback"
-            android:stopWithTask="false"/>
+            android:exported="false"/>
         
     </application>
 </manifest>

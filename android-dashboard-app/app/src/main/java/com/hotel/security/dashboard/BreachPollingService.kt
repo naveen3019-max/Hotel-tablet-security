@@ -26,536 +26,507 @@ import java.net.URL
 
 class BreachPollingService : Service() {
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var isRunning = false
-    private val POLL_INTERVAL = 30_000L // 30s
-    private val BACKEND_URL = "https://hotel-tablet-security.onrender.com"
+    private val handler = Handler(
+        Looper.getMainLooper())
+    private val POLL_INTERVAL = 30_000L
     private val CHANNEL_ID = "breach_alerts"
+    private val SERVICE_CHANNEL = 
+        "service_channel"
+    private var isRunning = false
+    private val BACKEND_URL =
+        "https://hotel-tablet-security" +
+        ".onrender.com"
     
-    private val notifiedDevices = mutableSetOf<String>()
-    private val lastNotifiedAlertId = mutableMapOf<String, String>()
-
-    private val wakeLock by lazy {
-        (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "HotelSecurity::PollWakeLock"
-        )
+    // ← Persistent acknowledged IDs
+    // Saved to SharedPrefs to survive restart
+    private val acknowledgedPrefsKey = 
+        "acknowledged_alert_ids"
+    
+    private fun getAcknowledgedIds(): 
+        MutableSet<String> {
+        return getSharedPreferences(
+            "hotel_dashboard_prefs",
+            Context.MODE_PRIVATE
+        ).getStringSet(
+            acknowledgedPrefsKey,
+            mutableSetOf()
+        )?.toMutableSet() ?: mutableSetOf()
     }
-
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            if (!isRunning) return
-            
-            // ← Acquire WakeLock during poll
-            // Prevents CPU sleep mid-request
+    
+    private fun saveAcknowledgedId(
+        alertId: String
+    ) {
+        if (alertId.isEmpty()) return
+        val prefs = getSharedPreferences(
+            "hotel_dashboard_prefs",
+            Context.MODE_PRIVATE)
+        val current = prefs.getStringSet(
+            acknowledgedPrefsKey,
+            mutableSetOf()
+        )?.toMutableSet() ?: mutableSetOf()
+        current.add(alertId)
+        // ← Keep only last 100 IDs
+        // to prevent unlimited growth
+        val trimmed = if (current.size > 100) {
+            current.takeLast(100).toMutableSet()
+        } else current
+        prefs.edit()
+            .putStringSet(
+                acknowledgedPrefsKey, trimmed)
+            .apply()
+        Log.d(TAG,
+            "Saved ACK ID: $alertId " +
+            "(total: ${trimmed.size})")
+    }
+    
+    // ← Last shown alert per device
+    private val lastShownAlertId = 
+        mutableMapOf<String, String>()
+    
+    companion object {
+        private const val TAG = 
+            "BreachPollingService"
+        
+        // ← Static reference for ACK receiver
+        var instance: BreachPollingService? = null
+        
+        fun acknowledgeLocally(
+            alertId: String,
+            deviceId: String,
+            notificationId: Int,
+            context: Context
+        ) {
+            // ← Dismiss notification
             try {
-                if (!wakeLock.isHeld) {
-                    wakeLock.acquire(15_000L)
-                }
+                NotificationManagerCompat
+                    .from(context)
+                    .cancel(notificationId)
+                Log.i(TAG,
+                    "Notification dismissed: " +
+                    "$notificationId")
             } catch (e: Exception) {
-                Log.w("PollingService", "WakeLock acquire failed: $e")
+                Log.e(TAG, "Dismiss error: $e")
             }
             
-            checkForNewBreaches()
+            // ← Stop alarm
+            try {
+                context.stopService(
+                    Intent(context,
+                        AlarmSoundService
+                            ::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "Stop alarm: $e")
+            }
             
-            handler.postDelayed(this, POLL_INTERVAL)
+            // ← Save to SharedPrefs
+            // so ACK survives service restart
+            if (alertId.isNotEmpty()) {
+                val prefs = context
+                    .getSharedPreferences(
+                    "hotel_dashboard_prefs",
+                    Context.MODE_PRIVATE)
+                val current = prefs.getStringSet(
+                    "acknowledged_alert_ids",
+                    mutableSetOf()
+                )?.toMutableSet() 
+                    ?: mutableSetOf()
+                current.add(alertId)
+                prefs.edit()
+                    .putStringSet(
+                        "acknowledged_alert_ids",
+                        current)
+                    .apply()
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         createNotificationChannels()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        isRunning = true
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int
+    ): Int {
+        // ← MUST call startForeground
+        // within 5 seconds on Android 8+
+        // Do it IMMEDIATELY in onStartCommand
+        startForeground(
+            1998,
+            buildServiceNotification()
+        )
         
-        // ← FIXED: Foreground service
-        // Android cannot kill foreground services
-        // (only suspends them briefly)
-        startForegroundWithNotification()
+        if (!isRunning) {
+            isRunning = true
+            handler.post(pollRunnable)
+            Log.i(TAG, "✅ Polling started")
+        }
         
-        // ← Start polling
-        handler.post(pollRunnable)
-        
-        Log.i("PollingService", "✅ Service started")
-        
-        // ← START_STICKY: Android restarts
-        // service automatically if killed
         return START_STICKY
     }
 
-    private fun startForegroundWithNotification() {
-        createNotificationChannels()
-        
-        // ← Silent persistent notification
-        // Required for foreground service
-        val notification = NotificationCompat.Builder(this, "service_channel")
+    private fun buildServiceNotification():
+        android.app.Notification {
+        return NotificationCompat
+            .Builder(this, SERVICE_CHANNEL)
             .setContentTitle("Hotel Security")
-            .setContentText("Monitoring for security alerts...")
-            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setContentText(
+                "Monitoring security alerts...")
+            .setSmallIcon(
+                android.R.drawable
+                    .ic_lock_idle_lock)
+            .setPriority(
+                NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
             .build()
-        
-        startForeground(1998, notification)
+    }
+
+    private val pollRunnable = 
+        object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            Thread {
+                checkForNewBreaches()
+            }.start()
+            handler.postDelayed(
+                this, POLL_INTERVAL)
+        }
     }
 
     private fun checkForNewBreaches() {
-        Thread {
-            try {
-                // Get JWT token from SharedPreferences
-                val prefs = getSharedPreferences("hotel_dashboard_prefs", Context.MODE_PRIVATE)
-                val token = prefs.getString("auth_token", "") ?: ""
-                
-                if (token.isEmpty()) {
-                    Log.d("PollingService", "No token — user not logged in")
-                    return@Thread
-                }
-                
-                // Poll recent alerts
-                val url = URL("$BACKEND_URL/api/alerts/recent?limit=5")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.setRequestProperty("Authorization", "Bearer $token")
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
-                
-                val code = conn.responseCode
-                if (code != 200) {
-                    conn.disconnect()
-                    return@Thread
-                }
-                
-                val response = conn.inputStream.bufferedReader().readText()
+        try {
+            val prefs = getSharedPreferences(
+                "hotel_dashboard_prefs",
+                Context.MODE_PRIVATE)
+            val token = prefs.getString(
+                "auth_token", "") ?: ""
+            
+            if (token.isEmpty()) return
+            
+            val url = URL(
+                "$BACKEND_URL/api/alerts" +
+                "/recent?limit=10")
+            val conn = url.openConnection()
+                as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty(
+                "Authorization",
+                "Bearer $token")
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            
+            val code = conn.responseCode
+            if (code != 200) {
                 conn.disconnect()
-                
-                // Parse response
-                processAlerts(response)
-                
-            } catch (e: Exception) {
-                Log.e("PollingService", "Poll error: ${e.message}")
-            } finally {
-                try {
-                    if (wakeLock.isHeld) {
-                        wakeLock.release()
-                    }
-                } catch (e: Exception) {}
+                return
             }
-        }.start()
+            
+            val response = conn.inputStream
+                .bufferedReader()
+                .readText()
+            conn.disconnect()
+            
+            processAlerts(response)
+            
+        } catch (e: Exception) {
+            Log.e(TAG,
+                "Poll error: ${e.message}")
+        }
     }
 
     private fun processAlerts(
         jsonResponse: String
     ) {
         try {
-            val jsonArray = JSONArray(jsonResponse)
+            val jsonArray = 
+                JSONArray(jsonResponse)
             if (jsonArray.length() == 0) return
             
-            val newBreaches = mutableListOf<BreachAlert>()
+            // ← Get persistent acknowledged IDs
+            val ackedIds = getAcknowledgedIds()
             
-            for (i in 0 until jsonArray.length()) {
+            val newBreaches = 
+                mutableListOf<BreachAlert>()
+            
+            for (i in 0 until 
+                jsonArray.length()) {
                 val alert = jsonArray
                     .getJSONObject(i)
                 
                 val alertId = alert
                     .optString("id", "")
-                val alertType = alert
+                val type = alert
                     .optString("type", "")
                 val deviceId = alert
-                    .optString("deviceId", "Unknown")
+                    .optString("deviceId", "")
                 val roomId = alert
-                    .optString("roomId", "Unknown")
+                    .optString("roomId", "")
                 val message = alert.optString(
-                    "message",
-                    "Security breach detected")
+                    "message", "Breach detected")
                 val acknowledged = alert
-                    .optBoolean("acknowledged", false)
+                    .optBoolean(
+                        "acknowledged", false)
                 
-                // ← Only process breach alerts
-                if (alertType != "breach") continue
+                if (type != "breach") continue
                 
-                // ← NEW/FIXED: Skip if acknowledged in backend
+                // ← Skip backend acknowledged
                 if (acknowledged) {
-                    // ← Also remove from local
-                    // tracking if was notified
-                    acknowledgedAlertIds.add(alertId)
-                    // ← Dismiss notification
+                    // ← Dismiss any notification
                     // for this device
-                    dismissNotificationForDevice(
-                        deviceId)
+                    val nId = Math.abs(
+                        deviceId.hashCode()
+                    ) + 2000
+                    handler.post {
+                        NotificationManagerCompat
+                            .from(this)
+                            .cancel(nId)
+                    }
                     continue
                 }
                 
-                // ← NEW/FIXED: Skip if acknowledged locally
-                // (tapped ACK in notification)
+                // ← Skip locally acknowledged
                 if (alertId.isNotEmpty() &&
-                    acknowledgedAlertIds
-                        .contains(alertId)) {
-                    Log.d("PollingService",
-                        "Skipping locally acked: " +
-                        "$alertId")
+                    ackedIds.contains(alertId)) {
+                    Log.d(TAG,
+                        "Skip locally acked: " +
+                        alertId)
                     continue
                 }
                 
-                // ← NEW/FIXED: Skip if same alert already shown
+                // ← Skip already shown
                 if (alertId.isNotEmpty() &&
-                    lastShownAlertId[deviceId] == 
-                    alertId) {
-                    Log.d("PollingService",
-                        "Already shown: $alertId")
+                    lastShownAlertId[deviceId]
+                    == alertId) {
                     continue
                 }
                 
-                // ← New unacknowledged breach!
                 newBreaches.add(BreachAlert(
-                    alertId = alertId,
-                    deviceId = deviceId,
-                    roomId = roomId,
-                    message = message
-                ))
+                    alertId, deviceId,
+                    roomId, message))
                 
                 if (alertId.isNotEmpty()) {
-                    lastShownAlertId[deviceId] = 
+                    lastShownAlertId[deviceId] =
                         alertId
                 }
             }
             
-            // ← Build notifications in background
-            // Only the final notify() needs main thread
-            for (breach in newBreaches) {
-                // Build everything in this thread
-                val notification = buildNotification(breach)
-                val notificationId = Math.abs(
-                    breach.deviceId.hashCode()) + 2000
-                
-                // ← Switch to main thread ONLY for notify
-                handler.post {
-                    // ← Show notification immediately
-                    try {
-                        if (isXiaomi()) {
-                            // Xiaomi needs explicit channel ID and notification manager restart
-                            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                            nm.cancel(notificationId)
-                            Thread.sleep(100)
-                            nm.notify(notificationId, notification)
-                        } else {
-                            NotificationManagerCompat
-                                .from(this)
-                                .notify(notificationId,
-                                    notification)
-                        }
-                        Log.i("PollingService", "✅ Notification shown FIRST: ${breach.deviceId}")
-                    } catch (e: Exception) {
-                        Log.e("PollingService", "Notification error: $e")
-                    }
-                    
-                    // ← Show group summary
-                    showGroupSummary()
-                    
-                    // ← Wake screen AFTER notification
-                    // Notification already queued to show
-                    wakeScreen()
-                    
-                    // ← Start alarm LAST
-                    // Notification is already showing
-                    // Alarm and notification appear together
-                    Handler(Looper.getMainLooper())
-                        .postDelayed({
-                        startAlarmSound()
-                    }, 300L) // 300ms after notification
+            if (newBreaches.isEmpty()) return
+            
+            // ← Build and show notifications
+            // on main thread
+            handler.post {
+                for (breach in newBreaches) {
+                    showBreachNotification(breach)
                 }
             }
             
         } catch (e: Exception) {
-            Log.e("PollingService",
-                "Parse error: ${e.message}")
+            Log.e(TAG,
+                "processAlerts: ${e.message}")
         }
     }
 
-    private fun dismissNotificationForDevice(
-        deviceId: String
+    private fun showBreachNotification(
+        breach: BreachAlert
     ) {
         val notificationId = Math.abs(
-            deviceId.hashCode()) + 2000
-        NotificationManagerCompat.from(this)
-            .cancel(notificationId)
-        Log.d("PollingService",
-            "Notification dismissed for: $deviceId")
-    }
-
-    private fun wakeScreen() {
-        try {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            
-            // ← Screen wake lock
-            // Wakes screen for 10 seconds
-            val screenWakeLock = pm.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK
-                or PowerManager.ACQUIRE_CAUSES_WAKEUP
-                or PowerManager.ON_AFTER_RELEASE,
-                "HotelSecurity::ScreenWake"
-            )
-            screenWakeLock.acquire(10_000L)
-            
-            // ← Release after 10 seconds
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    if (screenWakeLock.isHeld) {
-                        screenWakeLock.release()
-                    }
-                } catch (e: Exception) {}
-            }, 10_000L)
-            
-            Log.i("PollingService", "📱 Screen woken for breach alert")
-                
-        } catch (e: Exception) {
-            Log.w("PollingService", "Screen wake failed: ${e.message}")
-        }
-    }
-
-    private fun getAlertSound(): Uri {
-        // ← Try notification sound
-        val notifSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        if (notifSound != null) return notifSound
+            breach.deviceId.hashCode()) + 2000
+        val title =
+            "🚨 BREACH - Room ${breach.roomId}"
+        val body =
+            "${breach.deviceId}: ${breach.message}"
         
-        // ← Fall back to ringtone
-        val ringtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        if (ringtone != null) return ringtone
-        
-        // ← Last resort
-        return Settings.System.DEFAULT_RINGTONE_URI
-    }
-
-    private fun isXiaomi(): Boolean {
-        return Build.MANUFACTURER.lowercase().contains("xiaomi") ||
-            Build.MANUFACTURER.lowercase().contains("redmi")
-    }
-
-    private fun buildNotification(
-        breach: BreachAlert
-    ): android.app.Notification {
-        val title = "🚨 BREACH - Room ${breach.roomId}"
-        val body = "${breach.deviceId}: ${breach.message}"
-        
-        // ← Unique ID per device
-        val notificationId = Math.abs(breach.deviceId.hashCode()) + 2000
-        
-        // ← STEP 1: Build ACK intent
+        // ← Build ACK intent
+        // Using explicit class reference
         val ackIntent = Intent(
             this,
             AcknowledgeReceiver::class.java
         ).apply {
+            action = "ACK_BREACH"
             putExtra("alertId", breach.alertId)
             putExtra("deviceId", breach.deviceId)
-            putExtra("roomId", breach.roomId)
-            putExtra("notificationId", notificationId)
+            putExtra("notificationId",
+                notificationId)
         }
-        val ackPendingIntent = PendingIntent
-            .getBroadcast(
-                this,
-                notificationId + 2000,
-                ackIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or
-                PendingIntent.FLAG_IMMUTABLE
-            )
-
-        // ← STEP 2: Build open app intent
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("deviceId", breach.deviceId)
-            putExtra("roomId", breach.roomId)
-        }
-        
-        val openPendingIntent = PendingIntent.getActivity(
+        val ackPI = PendingIntent.getBroadcast(
             this,
-            notificationId,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            notificationId + 3000,
+            ackIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+            PendingIntent.FLAG_IMMUTABLE
         )
         
-        // ← STEP 3: Build notification
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+        // ← Build open intent
+        val openIntent = Intent(
+            this,
+            MainActivity::class.java
+        ).apply {
+            flags =
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("deviceId", breach.deviceId)
+        }
+        val openPI = PendingIntent.getActivity(
+            this,
+            notificationId,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        // ← Build notification
+        val notification = NotificationCompat
+            .Builder(this, CHANNEL_ID)
+            .setSmallIcon(
+                android.R.drawable.ic_dialog_alert)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("$body\n\nTap ACKNOWLEDGE to stop alarm")
+                    .bigText(body)
             )
-            // ← MAX priority
-            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setPriority(
+                NotificationCompat.PRIORITY_MAX)
             .setCategory(
-                // ← Use ALARM category for maximum interruption
-                NotificationCompat.CATEGORY_ALARM
-            )
-            .setAutoCancel(false) // ← Should not auto cancel since it's an alarm
-            .setContentIntent(openPendingIntent)
-            // ← NO sound in notification
-            // AlarmSoundService handles sound
+                NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(false)
+            .setOngoing(true)
             .setSound(null)
-            // ← NO vibration in notification
-            // AlarmSoundService handles vibration
             .setVibrate(null)
             .setColor(Color.RED)
             .setColorized(true)
-            // ← Full screen = shows over lockscreen
-            .setFullScreenIntent(openPendingIntent, true)
-            // ← Show on lockscreen
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setLights(Color.RED, 300, 300)
-            // ← Keep showing until dismissed
-            .setOngoing(true) // ← Cannot swipe away!
-            // ← Group all breach notifications
-            .setGroup("hotel_breaches")
-            // ← Add ACKNOWLEDGE button to notification
+            .setVisibility(
+                NotificationCompat
+                    .VISIBILITY_PUBLIC)
+            .setFullScreenIntent(openPI, true)
+            .setContentIntent(openPI)
             .addAction(
                 android.R.drawable.ic_menu_send,
                 "✅ ACKNOWLEDGE",
-                ackPendingIntent
+                ackPI
             )
-            // ← Add VIEW DASHBOARD button
             .addAction(
                 android.R.drawable.ic_menu_view,
-                "📱 VIEW DASHBOARD",
-                openPendingIntent
+                "📱 DASHBOARD",
+                openPI
             )
-            // ← Show time of breach
-            .setShowWhen(true)
+            .setGroup("hotel_breaches")
             .setWhen(System.currentTimeMillis())
             .build()
+        
+        // ← SHOW NOTIFICATION FIRST
+        try {
+            NotificationManagerCompat
+                .from(this)
+                .notify(notificationId,
+                    notification)
+            Log.i(TAG,
+                "✅ Notification shown: $title")
+        } catch (e: Exception) {
+            Log.e(TAG, "Notify error: $e")
+        }
+        
+        // ← Wake screen AFTER notification
+        wakeScreen()
+        
+        // ← Start alarm AFTER notification
+        // Small delay ensures notification
+        // appears first
+        handler.postDelayed({
+            startAlarmSound()
+        }, 100L)
+    }
+
+    private fun wakeScreen() {
+        try {
+            val pm = getSystemService(
+                Context.POWER_SERVICE
+            ) as PowerManager
+            val wl = pm.newWakeLock(
+                PowerManager
+                    .SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager
+                    .ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+                "HotelSecurity::ScreenWake"
+            )
+            wl.acquire(10_000L)
+            Handler(Looper.getMainLooper())
+                .postDelayed({
+                if (wl.isHeld) wl.release()
+            }, 10_000L)
+        } catch (e: Exception) {
+            Log.w(TAG, "Screen wake: $e")
+        }
     }
 
     private fun startAlarmSound() {
         try {
-            // ← Start AlarmSoundService
             val intent = Intent(
                 this,
                 AlarmSoundService::class.java
             )
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-            Log.i("PollingService", "✅ Alarm sound service started")
-        } catch (e: Exception) {
-            Log.e("PollingService", "Alarm start failed: $e")
-        }
-    }
-
-    fun stopAlarmSound() {
-        try {
-            val intent = Intent(
-                this,
-                AlarmSoundService::class.java
-            ).apply {
-                action = "STOP_ALARM"
-            }
             startService(intent)
-            Log.i("PollingService", "🔕 Alarm sound stopped")
         } catch (e: Exception) {
-            Log.e("PollingService", "Alarm stop failed: $e")
-        }
-    }
-
-
-    private fun showGroupSummary() {
-        val summaryNotification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Security Breaches")
-            .setContentText("Multiple security breaches detected")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setStyle(NotificationCompat.InboxStyle().setSummaryText("Multiple breaches"))
-            .setGroup("hotel_breaches")
-            .setGroupSummary(true)
-            .setAutoCancel(true)
-            .build()
-            
-        try {
-            NotificationManagerCompat.from(this).notify(1997, summaryNotification)
-        } catch (e: Exception) {
-            Log.e("PollingService", "Summary notification failed: $e")
+            Log.e(TAG, "Start alarm: $e")
         }
     }
 
     private fun createNotificationChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            
-            // ← Breach alert channel
-            val breachChannel = NotificationChannel(
-                CHANNEL_ID,
-                "🚨 Security Breach Alerts",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Critical hotel security alerts"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500, 200, 500)
-                enableLights(true)
-                lightColor = Color.RED
-                setShowBadge(true)
-                setBypassDnd(true) // ← Bypass DND!
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                
-                // ← Use notification sound NOT alarm sound
-                val audioAttributes = AudioAttributes.Builder()
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .setUsage(
-                        // ← NOTIFICATION not ALARM
-                        AudioAttributes.USAGE_NOTIFICATION_EVENT
-                    )
-                    .build()
-                
-                setSound(
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-                    audioAttributes
-                )
-            }
-            
-            // ← Silent service channel
-            val serviceChannel = NotificationChannel(
-                "service_channel",
-                "Security Monitor",
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                setShowBadge(false)
-                setSound(null, null)
-                enableVibration(false)
-                description = "Background monitoring service"
-            }
-            
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(breachChannel)
-            manager.createNotificationChannel(serviceChannel)
-            
-            Log.i("PollingService", "✅ Notification channels created")
+        if (Build.VERSION.SDK_INT < 
+            Build.VERSION_CODES.O) return
+        
+        val breachChannel = NotificationChannel(
+            CHANNEL_ID,
+            "Security Breach Alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Breach alerts"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(
+                0, 500, 200, 500)
+            enableLights(true)
+            lightColor = Color.RED
+            setShowBadge(true)
+            setBypassDnd(true)
+            lockscreenVisibility =
+                Notification.VISIBILITY_PUBLIC
+            setSound(null, null)
         }
-    }
-
-    override fun stopService(name: Intent?): Boolean {
-        isRunning = false
-        handler.removeCallbacks(pollRunnable)
-        return super.stopService(name)
+        
+        val serviceChannel = NotificationChannel(
+            SERVICE_CHANNEL,
+            "Security Monitor",
+            NotificationManager.IMPORTANCE_MIN
+        ).apply {
+            setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
+        }
+        
+        val nm = getSystemService(
+            NotificationManager::class.java)
+        nm.createNotificationChannel(
+            breachChannel)
+        nm.createNotificationChannel(
+            serviceChannel)
     }
 
     override fun onDestroy() {
         isRunning = false
-        handler.removeCallbacks(pollRunnable)
+        handler.removeCallbacksAndMessages(null)
+        instance = null
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-    
-    companion object {
-        // ← NEW/FIXED: Track acknowledged alert IDs
-        // These will NOT be re-notified
-        val acknowledgedAlertIds = mutableSetOf<String>()
-        
-        // ← NEW/FIXED: Track shown alert IDs per device
-        // Maps deviceId → last shown alertId
-        val lastShownAlertId = mutableMapOf<String, String>()
-    }
+    override fun onBind(
+        intent: Intent?
+    ): IBinder? = null
 }
 
 data class BreachAlert(
