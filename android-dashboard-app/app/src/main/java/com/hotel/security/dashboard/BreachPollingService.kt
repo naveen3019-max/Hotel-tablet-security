@@ -68,7 +68,7 @@ class BreachPollingService : Service() {
         // ← Keep only last 100 IDs
         // to prevent unlimited growth
         val trimmed = if (current.size > 100) {
-            current.takeLast(100).toMutableSet()
+            current.toList().takeLast(100).toMutableSet()
         } else current
         prefs.edit()
             .putStringSet(
