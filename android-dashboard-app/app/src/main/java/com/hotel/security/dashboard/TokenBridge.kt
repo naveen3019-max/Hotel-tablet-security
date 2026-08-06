@@ -59,4 +59,25 @@ class TokenBridge(
             PREFS_NAME, Context.MODE_PRIVATE
         ).getString(KEY_HOTEL_ID, "") ?: ""
     }
+
+    @JavascriptInterface
+    fun acknowledgeAlert(alertId: String, deviceId: String) {
+        Log.i("TokenBridge", "✅ Acknowledge alert from WebView: $alertId, device: $deviceId")
+        
+        // Calculate notificationId the same way BreachPollingService does
+        val notificationId = Math.abs(deviceId.hashCode()) + 2000
+        
+        BreachPollingService.acknowledgeLocally(alertId, deviceId, notificationId, context)
+    }
+
+    @JavascriptInterface
+    fun acknowledgeAllAlerts() {
+        Log.i("TokenBridge", "✅ Acknowledge all alerts from WebView")
+        try {
+            androidx.core.app.NotificationManagerCompat.from(context).cancelAll()
+            context.stopService(Intent(context, AlarmSoundService::class.java))
+        } catch (e: Exception) {
+            Log.e("TokenBridge", "Error clearing all notifications/alarms: $e")
+        }
+    }
 }

@@ -253,6 +253,16 @@ export default function EnhancedDashboard() {
       setAlerts((prev: Alert[]) =>
         prev.map((a: Alert) => (a === alert ? { ...a, acknowledged: true } : a))
       );
+      
+      // Call Android native bridge to dismiss local notification and alarm
+      if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAlert) {
+        try {
+          const alertId = (alert as any).id || `${deviceId}_${alert.ts}`;
+          (window as any).HotelSecurityBridge.acknowledgeAlert(alertId, deviceId);
+        } catch (err) {
+          console.error("Bridge acknowledge error:", err);
+        }
+      }
     } catch (e) {
       console.error("Failed to acknowledge alert", e);
     }
@@ -262,6 +272,15 @@ export default function EnhancedDashboard() {
     try {
       await fetch(`${API}/api/alerts/acknowledge-all`, { method: 'POST' });
       setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
+      
+      // Call Android native bridge
+      if (typeof window !== "undefined" && (window as any).HotelSecurityBridge && (window as any).HotelSecurityBridge.acknowledgeAllAlerts) {
+        try {
+          (window as any).HotelSecurityBridge.acknowledgeAllAlerts();
+        } catch (err) {
+          console.error("Bridge acknowledgeAll error:", err);
+        }
+      }
     } catch (e) {
       console.error("Failed to acknowledge all", e);
     }
