@@ -551,6 +551,9 @@ class KioskService : Service() {
 
         batteryWatcher = BatteryWatcher(this) { level ->
             Log.e("KioskService", "🚨🔋 LOW BATTERY ALERT: $level% - Sending to backend...")
+            
+            // Show local push notification on the device
+            showBatteryNotification(level)
 
             serviceScope.launch {
                 try {
@@ -1149,6 +1152,20 @@ class KioskService : Service() {
         
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(999, notification)
+    }
+
+    private fun showBatteryNotification(level: Int) {
+        val notification = NotificationCompat.Builder(this, "BREACH_ALERTS")
+            .setContentTitle("🔋 LOW BATTERY")
+            .setContentText("Device battery is low ($level%). Please charge immediately.")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setAutoCancel(true)
+            .build()
+        
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(998, notification)
     }
 
     private fun getWifiInfo(): WifiData {
