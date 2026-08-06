@@ -668,6 +668,39 @@ export default function Dashboard() {
         }
       }
 
+      if (lastMessage.type === "alert" && d?.type === "low_battery") {
+        const battDeviceId = d?.deviceId || d?.device_id || (lastMessage as Record<string, unknown>).deviceId;
+        const alertTime = ((lastMessage as Record<string, unknown>).timestamp as string | undefined) ?? new Date().toISOString();
+        const alertId = `${battDeviceId}_${alertTime}`;
+        
+        if (shownAlertIds.current.has(alertId)) {
+          return;
+        }
+        shownAlertIds.current.add(alertId);
+        
+        const newAlert: Alert = {
+          id: alertId,
+          type: "low_battery",
+          deviceId: (battDeviceId as string) || "Unknown",
+          roomId: d?.roomId as string | undefined,
+          ts: alertTime,
+          acknowledged: false,
+          message: `Low Battery: ${d?.level}%`,
+        };
+        
+        setAlerts((prev) => [newAlert, ...prev].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100));
+        
+        if (battDeviceId) {
+          addToast(battDeviceId as string, d?.roomId as string | undefined, `Battery is at ${d?.level}%`);
+          if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+            const notif = new Notification("🔋 LOW BATTERY ALERT", {
+              body: `Device ${battDeviceId} ${d?.roomId ? `(Room ${d.roomId})` : ""} is at ${d?.level}% battery.`,
+            });
+            notif.onclick = () => { window.focus(); notif.close(); };
+          }
+        }
+      }
+
       if (lastMessage?.type === "device_registered" && d?.deviceId) {
         setDevices((prev) => {
           const exists = prev.some((dev) => dev.deviceId === d.deviceId);
