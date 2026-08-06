@@ -896,9 +896,6 @@ class KioskService : Service() {
     }
 
     private fun triggerWrongNetworkBreach() {
-        // ← FIX: Only fire if WiFi has been stable for longer than
-        // WIFI_STABILIZE_DELAY. During the reconnect window the SSID may
-        // not yet be readable, causing a false wrong-network breach.
         val timeSinceConnect = SystemClock.elapsedRealtime() - wifiTurnedOnAt
         if (wifiTurnedOnAt > 0L && timeSinceConnect < WIFI_STABILIZE_DELAY) {
             Log.d("KioskService",
@@ -908,58 +905,62 @@ class KioskService : Service() {
             return
         }
 
-        // ← FIX: If SixSignalMonitor already fired a WiFi-OFF breach,
-        // don't also fire a wrong-network breach on the same reconnect.
         if (com.example.hotel.security.SixSignalMonitor.isBreachActive) {
             Log.d("KioskService",
                 "⏭ Breach already active — skipping wrong-network breach")
             return
         }
 
-        val prefs = getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
-        val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
-        val authorizedNetId = prefs.getInt("authorized_net_id", -1)
-
-        val current = getCurrentNetworkIdentity()
-
-        val reason = "Wrong WiFi: connected to " +
-            "SSID='${current.ssid}' netId=${current.networkId} " +
-            "but authorized SSID='$authorizedSsid' netId=$authorizedNetId"
-
-        val deviceId = getSharedPreferences("agent", Context.MODE_PRIVATE)
-            .getString("device_id", "TAB-UNKNOWN")!!
-        val roomId = getSharedPreferences("agent", Context.MODE_PRIVATE)
-            .getString("room_id", "UNKNOWN")!!
-
-        Log.e("KioskService", "🚨 Wrong network breach: $reason")
-
-        val auth = getSharedPreferences("agent", Context.MODE_PRIVATE)
-            .getString("jwt_token", null)?.let { "Bearer $it" }
-
-        if (auth != null) {
-            serviceScope.launch {
-                try {
-                    val repo = AgentRepository.default(applicationContext).alerts
-                    repo.breach(auth, BreachRequest(deviceId, roomId, -127))
-                } catch (e: Exception) {
-                    OfflineQueueManager.getInstance(applicationContext).queueAlert(
-                        "breach", deviceId, roomId,
-                        mapOf("rssi" to -127, "message" to reason)
-                    )
-                }
+        val prefs = getSharedPreferences(
+            "hotel_prefs", Context.MODE_PRIVATE)
+        val authorizedSsid = prefs.getString(
+            "authorized_ssid", "") ?: ""
+        
+        val wifiManager = applicationContext
+            .getSystemService(
+                Context.WIFI_SERVICE
+            ) as WifiManager
+        val currentSsid = try {
+            @Suppress("DEPRECATION")
+            wifiManager.connectionInfo
+                ?.ssid
+                ?.replace("\"", "")
+                ?.trim() ?: "Unknown"
+        } catch (e: Exception) { "Unknown" }
+        
+        val reason = "Wrong WiFi network: " +
+            "'$currentSsid' not '$authorizedSsid'"
+        
+        Log.e("KioskService", "🚨 $reason")
+        
+        // ← FIXED: Show orange screen locally
+        // Same as WiFi OFF breach screen
+        try {
+            val lockIntent = Intent(
+                this,
+                com.example.hotel.ui.LockActivity::class.java
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
             }
+            startActivity(lockIntent)
+            Log.i("KioskService", "✅ Orange screen triggered: $reason")
+        } catch (e: Exception) {
+            Log.e("KioskService", "Orange screen failed: $e")
         }
-
-        val lockIntent = Intent(
-            this,
-            com.example.hotel.ui.LockActivity::class.java
-        ).apply {
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP
-            )
+        
+        // ← Send breach to backend
+        val si = Intent(this, com.example.hotel.security.WiFiMonitoringService::class.java).apply {
+            action = "WRONG_NETWORK_BREACH"
+            putExtra("BREACH_REASON", reason)
+            putExtra("IMMEDIATE_BREACH", true)
+            putExtra("FORCED_RSSI", -127)
         }
-        startActivity(lockIntent)
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(si)
+        else startService(si)
     }
 
     // Call this once on first start AND after each heartbeat

@@ -1,7 +1,7 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from config import settings
 
@@ -48,7 +48,7 @@ class Hotel(BaseModel):
     max_devices: int = 100
     contact_email: Optional[str] = None
     slack_webhook: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     class Config:
         populate_by_name = True
@@ -76,7 +76,7 @@ class Device(BaseModel):
     ip: Optional[str] = None
     registered_by: Optional[str] = None
     staff_name: Optional[str] = None
-    last_seen: datetime = Field(default_factory=datetime.utcnow)
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     class Config:
         populate_by_name = True
@@ -89,7 +89,7 @@ class Alert(BaseModel):
     room_id: Optional[str] = None
     hotel_id: Optional[str] = None
     payload: dict
-    ts: datetime = Field(default_factory=datetime.utcnow)
+    ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     acknowledged: bool = False
     acknowledged_by: Optional[str] = None
     acknowledged_at: Optional[datetime] = None

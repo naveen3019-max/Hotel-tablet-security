@@ -228,41 +228,45 @@ class SixSignalMonitor(private val context: Context) {
 
                 var posted = false
 
-                // Phase 1: 3 fast attempts, 1 second apart (handles Render-awake case quickly)
-                for (attempt in 1..3) {
+                // ← First 5 attempts: immediate
+                // No delay between attempts
+                // Catches Render if already awake
+                for (attempt in 1..5) {
                     if (posted) break
                     Log.d(TAG, "Breach POST attempt $attempt/15 (fast phase)")
                     posted = attemptBreachPost(
                         backendUrl, deviceId, roomId, token, rssi, breachTimestamp, reason, attempt
                     )
-                    if (!posted) Thread.sleep(1_000L)
+                    if (posted) {
+                        Log.i(TAG, "✅ Breach sent attempt $attempt")
+                    }
+                    // ← NO delay for first 5!
+                    // Just immediately retry
                 }
 
                 if (posted) {
-                    Log.i(TAG, "✅ Breach sent in fast phase")
                     clearPendingBreach()
                     return@Thread
                 }
 
-                // Phase 2: 12 slower attempts, 2 seconds apart (covers Render cold-start ~27s)
-                for (attempt in 4..15) {
+                // ← Next 10 attempts: 1s gap
+                // Render should be awake by now
+                for (attempt in 6..15) {
                     if (posted) break
                     Log.d(TAG, "Breach POST attempt $attempt/15 (slow phase)")
                     posted = attemptBreachPost(
                         backendUrl, deviceId, roomId, token, rssi, breachTimestamp, reason, attempt
                     )
-                    if (!posted) Thread.sleep(2_000L)
+                    if (posted) {
+                        Log.i(TAG, "✅ Breach sent attempt $attempt")
+                        clearPendingBreach()
+                    }
+                    if (!posted) Thread.sleep(1_000L)
                 }
 
-                if (posted) {
-                    Log.i(TAG, "✅ Breach sent in slow phase")
-                    clearPendingBreach()
-                } else {
-                    // ALL 15 attempts failed — WiFi is truly off (no mobile data path)
-                    // DO NOT save as pending. The backend Heartbeat Timeout will detect
-                    // this offline state. Saving and sending it later upon reconnect
-                    // causes a false duplicate breach.
-                    Log.w(TAG, "⚠️ All 15 breach POST attempts failed — ignoring to prevent reconnect duplicates")
+                if (!posted) {
+                    Log.w(TAG, "All 15 failed — saving pending breach")
+                    savePendingBreach(rssi, breachTimestamp)
                 }
 
             } finally {
@@ -288,8 +292,9 @@ class SixSignalMonitor(private val context: Context) {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("Authorization", "Bearer $token")
-                connectTimeout = 12_000
-                readTimeout = 12_000
+                // ← FIXED: 3s timeout not 5s/12s!
+                connectTimeout = 3000
+                readTimeout = 4000
                 doOutput = true
             }
             val body = JSONObject().apply {
@@ -439,8 +444,8 @@ class SixSignalMonitor(private val context: Context) {
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Authorization", "Bearer $deviceToken")
             conn.doOutput = true
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
+            conn.connectTimeout = 3000
+            conn.readTimeout = 4000
 
             val body = JSONObject().apply {
                 put("deviceId", deviceId)

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # SMTP
     smtp_enabled: bool = Field(
-        default_factory=lambda: str(
+        default_factory=lambda: (
             os.environ.get("SMTP_ENABLED") or
             "False"
         ).lower() in ("true", "1", "yes")
@@ -91,7 +91,7 @@ class Settings(BaseSettings):
 
     # Slack
     slack_enabled: bool = Field(
-        default_factory=lambda: str(
+        default_factory=lambda: (
             os.environ.get("SLACK_ENABLED") or
             "False"
         ).lower() in ("true", "1", "yes")
@@ -111,7 +111,7 @@ class Settings(BaseSettings):
         )
     )
     celery_enabled: bool = Field(
-        default_factory=lambda: str(
+        default_factory=lambda: (
             os.environ.get("CELERY_ENABLED") or
             "True"
         ).lower() in ("true", "1", "yes")
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
         )
     )
     debug: bool = Field(
-        default_factory=lambda: str(
+        default_factory=lambda: (
             os.environ.get("DEBUG") or
             "True"
         ).lower() in ("true", "1", "yes")

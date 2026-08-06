@@ -30,7 +30,7 @@ class ConnectionManager:
             f"📡 WS client disconnected. Total: {len(self.active_connections)}"
         )
 
-    async def broadcast(self, message: dict, target_hotel_id: str = None):
+    async def broadcast(self, message: dict, target_hotel_id: Optional[str] = None):
         """
         ← FIXED: Broadcast ONLY to clients belonging to target_hotel_id.
         If target_hotel_id is None, broadcasts to super_admin connections only (hotel_id="ALL")

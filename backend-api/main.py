@@ -228,7 +228,7 @@ async def monitor_device_heartbeats():
     
     # Heartbeat timeout: 120 seconds
     # (devices send heartbeats every 10 seconds. 120s provides a safe buffer for network jitter)
-    OFFLINE_THRESHOLD_SECONDS = 120
+    OFFLINE_THRESHOLD_SECONDS = 90
     
     # Dedup window: if a breach alert was already created within this many
     # seconds (from any source), skip creating another one.
