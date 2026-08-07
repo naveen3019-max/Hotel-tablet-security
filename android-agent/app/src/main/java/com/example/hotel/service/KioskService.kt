@@ -218,7 +218,7 @@ class KioskService : Service() {
                             val repo = AgentRepository.default(applicationContext).alerts
                             
                             val bssidActual = wifiFence.getCurrentBssid() ?: bssid
-                            repo.heartbeat(auth, HeartbeatRequest(deviceId, roomId, bssidActual, lastKnownRssi, batteryWatcher.getCurrentLevel()))
+                            repo.heartbeat(auth, HeartbeatRequest(deviceId, roomId, bssidActual, lastKnownRssi, getBatteryLevel()))
                             Log.d("KioskService", "✅ Retry succeeded")
                         } catch (e2: Exception) {
                             Log.e("KioskService", "❌ Retry also failed: ${e2.message}")
@@ -452,13 +452,11 @@ class KioskService : Service() {
                 Log.e("KioskService", "📤 Sending recovery heartbeat to backend...")
                 serviceScope.launch {
                     try {
-                        val wifiData = getWifiInfo()
-                        val currentRssi = wifiData.rssi
-                        val currentBssid = wifiData.bssid
+                        val currentRssi = getWifiRssi()
+                        val currentBssid = getCurrentNetworkIdentity().bssid
                         
                         // Get current battery level
-                        val batteryManager = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
-                        val batteryLevel = batteryManager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                        val batteryLevel = getBatteryLevel()
                         
                         AgentRepository.default(applicationContext).alerts.heartbeat(
                             auth,
@@ -595,8 +593,8 @@ class KioskService : Service() {
 
     private fun getRssiWithRetry(): Int {
         repeat(3) {
-            val rssi = wifiFence.getCurrentRssi()
-            if (rssi != null && rssi > -120) return rssi
+            val rssi = getWifiRssi()
+            if (rssi > -120) return rssi
             Thread.sleep(200L)
         }
         return lastKnownRssi
@@ -610,71 +608,148 @@ class KioskService : Service() {
     //                        and networkId still work
     // ─────────────────────────────────────────────────────────────────────
     private fun getCurrentNetworkIdentity(): NetworkIdentity {
-        val wifiManager = applicationContext
-            .getSystemService(Context.WIFI_SERVICE) as WifiManager
-
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = cm.activeNetwork
-        val caps = network?.let { cm.getNetworkCapabilities(it) }
-        val isWifiConnected = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-
-        if (!isWifiConnected) {
-            return NetworkIdentity(ssid = "", bssid = "", networkId = -1, isConnected = false)
-        }
-
-        var ssid = ""
-        var bssid = ""
-        var networkId = -1
-
-        // Method 1: Android 12+ (API 31+) — WifiInfo via NetworkCapabilities
-        // Works WITHOUT ACCESS_FINE_LOCATION
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                val wifiInfo = caps?.transportInfo as? WifiInfo
-                if (wifiInfo != null) {
-                    ssid = wifiInfo.ssid?.replace("\"", "")?.trim() ?: ""
-                    bssid = wifiInfo.bssid ?: ""
-                    networkId = wifiInfo.networkId
-                    Log.d("KioskService",
-                        "Method1 (API31+): SSID='$ssid' BSSID='$bssid' netId=$networkId")
-                }
-            } catch (e: Exception) {
-                Log.w("KioskService", "Method1 failed: $e")
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            
+            if (wm == null || cm == null) {
+                Log.w("KioskService", "Manager null")
+                return NetworkIdentity("", "", -1, false)
             }
-        }
-
-        // Method 2: connectionInfo fallback (all APIs)
-        // SSID may be "<unknown ssid>" on API 29-30 without location,
-        // but BSSID and networkId still return valid values
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
-            try {
-                @Suppress("DEPRECATION")
-                val info = wifiManager.connectionInfo
-                if (info != null) {
-                    val rawSsid = info.ssid?.replace("\"", "")?.trim() ?: ""
-                    if (rawSsid.isNotEmpty() && rawSsid != "<unknown ssid>") {
-                        ssid = rawSsid
+            
+            if (!wm.isWifiEnabled) {
+                return NetworkIdentity("", "", -1, false)
+            }
+            
+            val network = cm.activeNetwork
+            val caps = network?.let { cm.getNetworkCapabilities(it) }
+            val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+            
+            if (!isWifi) {
+                return NetworkIdentity("", "", -1, false)
+            }
+            
+            var ssid = ""
+            var bssid = ""
+            var networkId = -1
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    val wifiInfo = caps?.transportInfo as? WifiInfo
+                    ssid = wifiInfo?.ssid?.replace("\"", "")?.trim() ?: ""
+                    if (ssid == "<unknown ssid>") ssid = ""
+                    bssid = wifiInfo?.bssid?.let { if (it == "02:00:00:00:00:00") "" else it } ?: ""
+                    networkId = wifiInfo?.networkId ?: -1
+                } catch (e: Exception) {
+                    Log.w("KioskService", "Network A12: $e")
+                }
+            }
+            
+            if (ssid.isEmpty() && networkId == -1) {
+                try {
+                    val info = wm.connectionInfo
+                    val raw = info?.ssid?.replace("\"", "")?.trim() ?: ""
+                    if (raw.isNotEmpty() && raw != "<unknown ssid>") {
+                        ssid = raw
                     }
-                    if (bssid.isEmpty()) bssid = info.bssid ?: ""
-                    if (networkId == -1) networkId = info.networkId
-                    Log.d("KioskService",
-                        "Method2 (connectionInfo): SSID='$rawSsid' BSSID='$bssid' netId=$networkId")
+                    if (bssid.isEmpty()) {
+                        val b = info?.bssid ?: ""
+                        if (b != "02:00:00:00:00:00") bssid = b
+                    }
+                    if (networkId == -1) {
+                        networkId = info?.networkId ?: -1
+                    }
+                } catch (e: Exception) {
+                    Log.w("KioskService", "Network conn: $e")
                 }
-            } catch (e: Exception) {
-                Log.w("KioskService", "Method2 failed: $e")
             }
+            
+            Log.d("KioskService", "Network: ssid='$ssid' bssid='$bssid' netId=$networkId")
+            return NetworkIdentity(ssid, bssid, networkId, true)
+            
+        } catch (e: Exception) {
+            Log.e("KioskService", "NetworkIdentity: $e")
+            return NetworkIdentity("", "", -1, false)
         }
+    }
 
-        // Clean up privacy/randomised MAC addresses — treat as empty
-        val finalBssid = if (bssid == "02:00:00:00:00:00" ||
-            bssid == "00:00:00:00:00:00") "" else bssid
+    private fun getBatteryLevel(): Int {
+        try {
+            val bm = applicationContext.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            if (bm != null) {
+                val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                if (level in 1..100) {
+                    Log.d("KioskService", "Battery M1: $level%")
+                    return level
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("KioskService", "Battery M1: $e")
+        }
+        
+        try {
+            val intent = applicationContext.registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+            if (intent != null) {
+                val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) {
+                    val pct = level * 100 / scale
+                    if (pct in 1..100) {
+                        Log.d("KioskService", "Battery M2: $pct%")
+                        return pct
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("KioskService", "Battery M2: $e")
+        }
+        
+        Log.w("KioskService", "Battery unknown — using 50")
+        return 50
+    }
 
-        return NetworkIdentity(
-            ssid = ssid,
-            bssid = finalBssid,
-            networkId = networkId,
-            isConnected = true
-        )
+    private fun getWifiRssi(): Int {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wm == null) {
+                Log.w("KioskService", "WifiManager null")
+                return -65
+            }
+            if (!wm.isWifiEnabled) return -127
+            
+            val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+            
+            if (!isWifi) return -127
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    val wifiInfo = caps?.transportInfo as? WifiInfo
+                    val rssi = wifiInfo?.rssi ?: -65
+                    if (rssi in -100..-1) {
+                        Log.d("KioskService", "RSSI A12: $rssi")
+                        return rssi
+                    }
+                } catch (e: Exception) {
+                    Log.w("KioskService", "RSSI A12: $e")
+                }
+            }
+            
+            val info = wm.connectionInfo
+            val rssi = info?.rssi ?: -65
+            return if (rssi in -100..-1) {
+                Log.d("KioskService", "RSSI conn: $rssi")
+                rssi
+            } else -65
+            
+        } catch (e: Exception) {
+            Log.w("KioskService", "RSSI error: $e")
+            return -65
+        }
     }
 
     private fun ensureAuthorizedNetworkSaved() {
@@ -865,7 +940,7 @@ class KioskService : Service() {
         val repo = AgentRepository.default(applicationContext).alerts
         val rssi = getRssiWithRetry()
         val bssidActual = wifiFence.getCurrentBssid() ?: bssid
-        val battery = batteryWatcher.getCurrentLevel()
+        val battery = getBatteryLevel()
 
         val response = repo.heartbeat(
             auth,
@@ -1168,41 +1243,8 @@ class KioskService : Service() {
         notificationManager.notify(998, notification)
     }
 
-    private fun getWifiInfo(): WifiData {
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        
-        val isEnabled = wifiManager.isWifiEnabled
-        if (!isEnabled) {
-            return WifiData(rssi = -127, bssid = "00:00:00:00:00:00", isConnected = false)
-        }
-        
-        val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        val network = cm.activeNetwork
-        val caps = network?.let { cm.getNetworkCapabilities(it) }
-        val isWifiConnected = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: false
-        
-        if (!isWifiConnected) {
-            return WifiData(rssi = -127, bssid = "00:00:00:00:00:00", isConnected = false)
-        }
-        
-        val rssi = try {
-            val info = wifiManager.connectionInfo
-            info?.rssi ?: -65
-        } catch (e: Exception) {
-            -65
-        }
-        
-        return WifiData(rssi = rssi, bssid = "AA:BB:CC:DD:EE:FF", isConnected = true)
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 }
-
-data class WifiData(
-    val rssi: Int,
-    val bssid: String,
-    val isConnected: Boolean
-)
 
 // Holds all three identifiers used to recognise a specific WiFi network
 // without requiring ACCESS_FINE_LOCATION on Android 10-11
