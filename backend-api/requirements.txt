@@ -16,3 +16,4 @@ flower
 pytest
 pytest-asyncio
 pytz
+firebase-admin
