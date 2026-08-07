@@ -675,12 +675,21 @@ class KioskService : Service() {
 
     private fun getBatteryLevel(): Int {
         try {
-            val bm = applicationContext.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-            if (bm != null) {
-                val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                if (level in 1..100) {
-                    Log.d("KioskService", "Battery M1: $level%")
-                    return level
+            val intent = applicationContext.registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+            
+            if (intent != null) {
+                val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+                
+                if (level >= 0 && scale > 0) {
+                    val pct = (level * 100f / scale).toInt()
+                    if (pct in 0..100) {
+                        Log.d("KioskService", "Battery: $pct%")
+                        return pct
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -688,66 +697,62 @@ class KioskService : Service() {
         }
         
         try {
-            val intent = applicationContext.registerReceiver(
-                null,
-                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-            )
-            if (intent != null) {
-                val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
-                val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
-                if (level >= 0 && scale > 0) {
-                    val pct = level * 100 / scale
-                    if (pct in 1..100) {
-                        Log.d("KioskService", "Battery M2: $pct%")
-                        return pct
-                    }
-                }
+            val bm = applicationContext.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            
+            val level = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+            
+            if (level in 1..100) {
+                Log.d("KioskService", "Battery M2: $level%")
+                return level
             }
         } catch (e: Exception) {
             Log.w("KioskService", "Battery M2: $e")
         }
         
-        Log.w("KioskService", "Battery unknown — using 50")
+        Log.w("KioskService", "Battery unknown → 50")
         return 50
     }
 
     private fun getWifiRssi(): Int {
         try {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            if (wm == null) {
-                Log.w("KioskService", "WifiManager null")
-                return -65
+            val cm = applicationContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return -65
+            
+            val network = cm.activeNetwork ?: return -127
+                
+            val caps = cm.getNetworkCapabilities(network) ?: return -127
+            
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                return -127
             }
-            if (!wm.isWifiEnabled) return -127
-            
-            val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
-            val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-            
-            if (!isWifi) return -127
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                try {
-                    val wifiInfo = caps?.transportInfo as? WifiInfo
-                    val rssi = wifiInfo?.rssi ?: -65
-                    if (rssi in -100..-1) {
-                        Log.d("KioskService", "RSSI A12: $rssi")
-                        return rssi
-                    }
-                } catch (e: Exception) {
-                    Log.w("KioskService", "RSSI A12: $e")
+                val wifiInfo = caps.transportInfo as? WifiInfo
+                val rssi = wifiInfo?.rssi ?: -65
+                if (rssi in -120..-1) {
+                    Log.d("KioskService", "RSSI A12: $rssi")
+                    return rssi
                 }
             }
             
-            val info = wm.connectionInfo
+            val signal = caps.signalStrength
+            if (signal != Int.MIN_VALUE && signal != 0) {
+                Log.d("KioskService", "RSSI signal: $signal")
+                return signal
+            }
+            
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val info = wm?.connectionInfo
             val rssi = info?.rssi ?: -65
-            return if (rssi in -100..-1) {
+            
+            return if (rssi in -120..-1) {
                 Log.d("KioskService", "RSSI conn: $rssi")
                 rssi
             } else -65
             
         } catch (e: Exception) {
-            Log.w("KioskService", "RSSI error: $e")
+            Log.w("KioskService", "RSSI: $e")
             return -65
         }
     }

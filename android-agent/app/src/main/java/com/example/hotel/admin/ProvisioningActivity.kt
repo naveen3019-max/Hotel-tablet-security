@@ -40,6 +40,14 @@ class ProvisioningActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "ProvisioningActivity"
+        private const val PERMISSIONS_REQUEST = 100
+        
+        val REQUIRED_PERMISSIONS = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_WIFI_STATE,
+            Manifest.permission.CHANGE_WIFI_STATE
+        )
     }
 
     private lateinit var deviceIdInput: EditText
@@ -66,17 +74,11 @@ class ProvisioningActivity : AppCompatActivity() {
             }
         }
 
-        // â† NEW: Ask the user to exempt this app from Doze battery optimisations.
-        // Hotel tablets run 24/7 â€” Doze mode would throttle heartbeats after ~2 minutes
+        // ← NEW: Ask the user to exempt this app from Doze battery optimisations.
+        // Hotel tablets run 24/7 — Doze mode would throttle heartbeats after ~2 minutes
         // of screen-off time, causing false BREACH/OFFLINE alerts on the dashboard.
         requestBatteryOptimizationExemption()
 
-        // â† FIX (NEARBY_WIFI_DEVICES): Request WiFi identity permissions at provisioning time.
-        //   On targetSdk=34 / API >= 33: NEARBY_WIFI_DEVICES is required to unmask WifiInfo.
-        //   ACCESS_FINE_LOCATION is still required for API < 33 and some OEM ROMs.
-        //   Both are logged separately so we can see which one is missing in logcat.
-        requestWifiIdentityPermissions()
-        
         // Check if already provisioned
         val prefs = getSharedPreferences("agent", MODE_PRIVATE)
         if (prefs.contains("device_id") && prefs.contains("room_id")) {
@@ -85,6 +87,14 @@ class ProvisioningActivity : AppCompatActivity() {
             return
         }
         
+        if (!hasAllPermissions()) {
+            requestAllPermissions()
+        } else {
+            setupRegistrationForm()
+        }
+    }
+
+    private fun setupRegistrationForm() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -227,44 +237,90 @@ class ProvisioningActivity : AppCompatActivity() {
      * Call site: called ONCE during first-time provisioning setup only.
      */
 
-    // <- FIX: Request NEARBY_WIFI_DEVICES (API 33+) + ACCESS_FINE_LOCATION at runtime.
-    //   Without NEARBY_WIFI_DEVICES on targetSdk=34/API>=33, WifiInfo is fully masked:
-    //   SSID = "<unknown ssid>", BSSID = "02:00:00:00:00:00" on every network.
-    private fun requestWifiIdentityPermissions() {
-        val DBG = "WIFI_BREACH_DEBUG"
-        val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        Log.i(DBG, "[Provisioning] ACCESS_FINE_LOCATION= SDK=${Build.VERSION.SDK_INT}")
-        val nearbyGranted: Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val g = ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
-            Log.i(DBG, "[Provisioning] NEARBY_WIFI_DEVICES= (API>=33)")
-            g
-        } else { Log.i(DBG, "[Provisioning] NEARBY_WIFI_DEVICES N/A SDK<33"); true }
-        val toRequest = mutableListOf<String>().apply {
-            if (!fineGranted) add(Manifest.permission.ACCESS_FINE_LOCATION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !nearbyGranted) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+    private fun hasAllPermissions(): Boolean {
+        return REQUIRED_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-        if (toRequest.isNotEmpty()) {
-            Log.w(DBG, "[Provisioning] Requesting: ")
-            androidx.core.app.ActivityCompat.requestPermissions(this, toRequest.toTypedArray(), 1001)
-        } else { Log.i(DBG, "[Provisioning] All WiFi identity permissions already granted") }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        val DBG = "WIFI_BREACH_DEBUG"
-        if (requestCode == 1001) {
-            permissions.forEachIndexed { i, p ->
-                val g = grantResults.getOrNull(i) == PackageManager.PERMISSION_GRANTED
-                Log.i(DBG, "[Provisioning] Result:  granted=")  // <- DEBUG: log each individually
+    private fun requestAllPermissions() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Permissions Required")
+            .setMessage(
+                "Hotel Security requires:\n\n" +
+                "• Location: To read WiFi network " +
+                "information for security monitoring\n\n" +
+                "• WiFi: To monitor connection status\n\n" +
+                "Please grant all permissions to continue."
+            )
+            .setPositiveButton("Grant") { _, _ ->
+                androidx.core.app.ActivityCompat.requestPermissions(
+                    this,
+                    REQUIRED_PERMISSIONS,
+                    PERMISSIONS_REQUEST
+                )
             }
-            val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            val nearby = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED else true
-            Log.i(DBG, "[Provisioning] FINAL ACCESS_FINE_LOCATION= NEARBY_WIFI_DEVICES=")
-            if (!fine && (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || !nearby)) {
-                Toast.makeText(this, "WiFi identity permissions denied.\nWrong-network detection will NOT work.", Toast.LENGTH_LONG).show()
+            .setCancelable(false)
+            .show()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        
+        if (requestCode == PERMISSIONS_REQUEST) {
+            val allGranted = grantResults.all {
+                it == PackageManager.PERMISSION_GRANTED
+            }
+            
+            if (allGranted) {
+                Log.i("Provision", "✅ All permissions granted")
+                setupRegistrationForm()
+            } else {
+                val denied = permissions.filterIndexed { index, _ ->
+                    grantResults[index] != PackageManager.PERMISSION_GRANTED
+                }
+                Log.e("Provision", "❌ Denied: $denied")
+                
+                val permanentlyDenied = denied.any {
+                    !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(this, it)
+                }
+                
+                if (permanentlyDenied) {
+                    showGoToSettingsDialog()
+                } else {
+                    requestAllPermissions()
+                }
             }
         }
     }
+
+    private fun showGoToSettingsDialog() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Permissions Denied")
+            .setMessage(
+                "Location permission was permanently " +
+                "denied. Please go to Settings → " +
+                "Apps → Hotel Security → Permissions " +
+                "and enable Location permission."
+            )
+            .setPositiveButton("Open Settings") { _, _ ->
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            }
+            .setNegativeButton("Exit") { _, _ ->
+                finish()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+
     private fun requestBatteryOptimizationExemption() {
         // Doze Mode was introduced in API 23 â€” no-op on older devices.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
