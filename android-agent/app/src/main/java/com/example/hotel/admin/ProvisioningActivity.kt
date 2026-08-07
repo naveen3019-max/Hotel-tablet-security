@@ -538,7 +538,6 @@ class ProvisioningActivity : AppCompatActivity() {
      * DONT_KILL_APP flag ensures no process restart happens.
      */
     private fun hideAppShortcut() {
-        hideAppIconSamsung()
         hideAppIconStandard()
         forceSamsungLauncherRefresh()
         
@@ -548,15 +547,14 @@ class ProvisioningActivity : AppCompatActivity() {
             dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
             startLockTask()
         }
+        
+        Log.d("Kiosk", "Icon hidden. KioskService running: ${isServiceRunning(com.example.hotel.service.KioskService::class.java)}")
     }
 
-    private fun hideAppIconSamsung() {
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-        val adminComponent = ComponentName(this, HotelDeviceAdminReceiver::class.java)
-        if (dpm.isDeviceOwnerApp(packageName)) {
-            dpm.setApplicationHidden(adminComponent, packageName, true)
-            Log.d("Kiosk", "App hidden via DPM setApplicationHidden")
-        }
+    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
+        val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+        return manager.getRunningServices(Int.MAX_VALUE)
+            .any { it.service.className == serviceClass.name }
     }
 
     private fun hideAppIconStandard() {

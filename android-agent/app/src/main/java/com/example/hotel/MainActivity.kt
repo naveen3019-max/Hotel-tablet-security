@@ -199,13 +199,6 @@ class MainActivity : AppCompatActivity() {
     //   provisioned device (safety net — primary hide is in ProvisioningActivity).
     private fun hideAppIcon() {
         try {
-            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-            val adminComponent = ComponentName(this, com.example.hotel.admin.HotelDeviceAdminReceiver::class.java)
-            if (dpm.isDeviceOwnerApp(packageName)) {
-                dpm.setApplicationHidden(adminComponent, packageName, true)
-                Log.d("Kiosk", "App hidden via DPM setApplicationHidden")
-            }
-            
             val aliasComponent = ComponentName(packageName, "$packageName.MainActivityAlias")
             packageManager.setComponentEnabledSetting(
                 aliasComponent,
