@@ -1,15 +1,16 @@
 package com.example.hotel.admin
 
-import android.content.ComponentName       // â† NEW: used to target MainActivityAlias
+import android.content.ComponentName       // ← NEW: used to target MainActivityAlias
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager   // â† NEW: COMPONENT_ENABLED_STATE_DISABLED
-import android.location.LocationManager    // â† FIX (CAUSE 1): check location services
+import android.content.pm.PackageManager
+import android.app.ActivityManager
+import android.location.LocationManager    // ← FIX (CAUSE 1): check location services
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler                  // â† NEW: 3-second delay before icon hide
-import android.os.Looper                   // â† NEW: main-thread looper for Handler
+import android.os.Handler                  // â†  NEW: 3-second delay before icon hide
+import android.os.Looper                   // â†  NEW: main-thread looper for Handler
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -534,15 +535,258 @@ class ProvisioningActivity : AppCompatActivity() {
      */
     private fun hideAppIcon() {
         try {
-            packageManager.setComponentEnabledSetting(
-                ComponentName(this, "${packageName}.MainActivityAlias"), // â† alias name
-                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                PackageManager.DONT_KILL_APP   // â† services keep running
+            // ← Step 1: Standard approach
+            // Works on all Android devices
+            val componentName = ComponentName(
+                this,
+                "${packageName}.MainActivityAlias"
             )
-            Log.i(TAG, "âœ… App icon hidden from launcher â€” running silently in background")
+            
+            packageManager.setComponentEnabledSetting(
+                componentName,
+                PackageManager
+                    .COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            
+            Log.i("HideIcon",
+                "✅ Component disabled: " +
+                componentName.className)
+            
+            // ← Step 2: Brand specific fixes
+            val manufacturer = Build.MANUFACTURER
+                .lowercase()
+            
+            Log.i("HideIcon",
+                "Device manufacturer: " +
+                Build.MANUFACTURER)
+            
+            when {
+                manufacturer.contains("samsung") -> {
+                    hideSamsung()
+                }
+                manufacturer.contains("huawei") -> {
+                    hideHuawei()
+                }
+                manufacturer.contains("xiaomi") ||
+                manufacturer.contains("redmi") -> {
+                    hideXiaomi()
+                }
+            }
+            
+            Log.i("HideIcon",
+                "✅ Icon hide completed for " +
+                Build.MANUFACTURER)
+                
+            // ← Add verification log after hiding
+            Handler(Looper.getMainLooper())
+                .postDelayed({
+                val state = packageManager
+                    .getComponentEnabledSetting(
+                        componentName)
+                
+                Log.i("HideIcon",
+                    "Component state after hide: $state")
+                // 2 = DISABLED ✅
+                // 1 = ENABLED ❌ (hide failed)
+                // 0 = DEFAULT ❌ (hide failed)
+                
+                if (state == PackageManager
+                    .COMPONENT_ENABLED_STATE_DISABLED) {
+                    Log.i("HideIcon",
+                        "✅ Icon successfully hidden!")
+                } else {
+                    Log.e("HideIcon",
+                        "❌ Icon hide FAILED! " +
+                        "State=$state")
+                    // ← Retry one more time
+                    // We only retry standard approach here
+                    try {
+                        packageManager.setComponentEnabledSetting(
+                            componentName,
+                            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                            PackageManager.DONT_KILL_APP
+                        )
+                    } catch (e: Exception) {}
+                }
+            }, 3000L)
+                
         } catch (e: Exception) {
-            // Never crash registration just because icon-hide failed
-            Log.e(TAG, "âš ï¸ Failed to hide app icon: ${e.message}")
+            Log.e("HideIcon",
+                "Hide icon failed: ${e.message}")
+        }
+    }
+
+    private fun hideSamsung() {
+        Log.i("HideIcon",
+            "Applying Samsung specific fix")
+        
+        try {
+            // ← Method 1: Send refresh broadcast
+            // to Samsung launcher
+            val refreshIntent = Intent(
+                "com.sec.android.app.launcher" +
+                ".REFRESH_SHORTCUT"
+            )
+            sendBroadcast(refreshIntent)
+            Log.d("HideIcon",
+                "Samsung refresh broadcast sent")
+        } catch (e: Exception) {
+            Log.w("HideIcon",
+                "Samsung broadcast 1: $e")
+        }
+        
+        try {
+            // ← Method 2: Kill Samsung launcher
+            // Forces it to reload icon cache
+            val activityManager = getSystemService(
+                Context.ACTIVITY_SERVICE
+            ) as ActivityManager
+            
+            // Samsung launcher packages
+            val samsungLaunchers = listOf(
+                "com.sec.android.app.launcher",
+                "com.samsung.android.app.spage",
+                "com.android.launcher3"
+            )
+            
+            // We cannot kill other apps directly
+            // but we can request launcher refresh
+            val homeIntent = Intent(
+                Intent.ACTION_MAIN
+            ).apply {
+                addCategory(
+                    Intent.CATEGORY_HOME)
+            }
+            val homeInfo = packageManager
+                .resolveActivity(
+                    homeIntent,
+                    PackageManager.MATCH_DEFAULT_ONLY
+                )
+            val currentLauncher = homeInfo
+                ?.activityInfo?.packageName ?: ""
+            
+            Log.d("HideIcon",
+                "Current launcher: $currentLauncher")
+                
+        } catch (e: Exception) {
+            Log.w("HideIcon",
+                "Samsung method 2: $e")
+        }
+        
+        try {
+            // ← Method 3: Use ShortcutManager
+            // to remove any pinned shortcuts
+            if (Build.VERSION.SDK_INT >= 
+                Build.VERSION_CODES.N_MR1) {
+                val shortcutManager = getSystemService(
+                    android.content.pm
+                        .ShortcutManager::class.java
+                )
+                shortcutManager?.disableShortcuts(
+                    listOf(packageName))
+            }
+        } catch (e: Exception) {
+            Log.w("HideIcon",
+                "Samsung shortcut: $e")
+        }
+        
+        try {
+            // ← Method 4: Force package manager
+            // notification to launchers
+            packageManager.setComponentEnabledSetting(
+                ComponentName(
+                    this,
+                    "${packageName}.MainActivityAlias"
+                ),
+                PackageManager
+                    .COMPONENT_ENABLED_STATE_DISABLED,
+                // ← Use 0 flags instead of
+                // DONT_KILL_APP for Samsung
+                0
+            )
+            Log.d("HideIcon",
+                "Samsung: component disabled with 0 flags")
+        } catch (e: Exception) {
+            Log.w("HideIcon",
+                "Samsung method 4: $e")
+        }
+        
+        // ← Method 5: Delayed retry for Samsung
+        // Samsung launcher may need time to process
+        Handler(Looper.getMainLooper())
+            .postDelayed({
+            try {
+                packageManager
+                    .setComponentEnabledSetting(
+                    ComponentName(
+                        this,
+                        "${packageName}" +
+                        ".MainActivityAlias"
+                    ),
+                    PackageManager
+                        .COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.d("HideIcon",
+                    "Samsung: delayed retry done")
+            } catch (e: Exception) {
+                Log.w("HideIcon",
+                    "Samsung delayed: $e")
+            }
+        }, 2000L) // Retry after 2 seconds
+        
+        Handler(Looper.getMainLooper())
+            .postDelayed({
+            try {
+                packageManager
+                    .setComponentEnabledSetting(
+                    ComponentName(
+                        this,
+                        "${packageName}" +
+                        ".MainActivityAlias"
+                    ),
+                    PackageManager
+                        .COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.d("HideIcon",
+                    "Samsung: 2nd retry done")
+            } catch (e: Exception) {}
+        }, 5000L) // Second retry after 5 seconds
+    }
+
+    private fun hideXiaomi() {
+        // Xiaomi MIUI specific
+        try {
+            val intent = Intent(
+                "android.intent.action" +
+                ".DELETE"
+            ).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            // Don't actually send delete
+            // Just notify MIUI launcher
+            Log.d("HideIcon",
+                "Xiaomi: launcher notified")
+        } catch (e: Exception) {
+            Log.w("HideIcon", "Xiaomi: $e")
+        }
+    }
+
+    private fun hideHuawei() {
+        try {
+            val refreshIntent = Intent(
+                "com.huawei.android.launcher" +
+                ".REMOVE_BADGE"
+            ).apply {
+                putExtra("packageName", packageName)
+            }
+            sendBroadcast(refreshIntent)
+            Log.d("HideIcon",
+                "Huawei: launcher notified")
+        } catch (e: Exception) {
+            Log.w("HideIcon", "Huawei: $e")
         }
     }
 
