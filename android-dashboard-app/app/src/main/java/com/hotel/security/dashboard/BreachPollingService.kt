@@ -268,13 +268,11 @@ class BreachPollingService : Service() {
                     .optString("roomId", "")
                 val message = alert.optString(
                     "message", "Breach detected")
+                val battery = alert.optInt("battery", -1)
                 val acknowledged = alert
                     .optBoolean(
                         "acknowledged", false)
                 
-                if (type != "breach") continue
-                
-                // ← Skip backend acknowledged
                 if (acknowledged) {
                     // ← Dismiss any notification
                     // for this device
@@ -283,7 +281,7 @@ class BreachPollingService : Service() {
                     ) + 2000
                     handler.post {
                         NotificationManagerCompat
-                            .from(this)
+                            .from(this@BreachPollingService)
                             .cancel(nId)
                     }
                     continue
@@ -300,18 +298,31 @@ class BreachPollingService : Service() {
                 
                 // ← Skip already shown
                 if (alertId.isNotEmpty() &&
-                    lastShownAlertId[deviceId]
+                    lastShownAlertId[deviceId + type]
                     == alertId) {
                     continue
                 }
                 
-                newBreaches.add(BreachAlert(
-                    alertId, deviceId,
-                    roomId, message))
-                
-                if (alertId.isNotEmpty()) {
-                    lastShownAlertId[deviceId] =
-                        alertId
+                when (type) {
+                    "breach" -> {
+                        newBreaches.add(BreachAlert(
+                            alertId, deviceId,
+                            roomId, message,
+                            "breach"))
+                        lastShownAlertId[
+                            deviceId + type] = alertId
+                    }
+                    "low_battery", "battery_low" -> {
+                        // ← Add battery alert
+                        // Different handling — no alarm!
+                        newBreaches.add(BreachAlert(
+                            alertId, deviceId,
+                            roomId, message,
+                            "battery_low",
+                            battery))
+                        lastShownAlertId[
+                            deviceId + type] = alertId
+                    }
                 }
             }
             
@@ -320,8 +331,17 @@ class BreachPollingService : Service() {
             // ← Build and show notifications
             // on main thread
             handler.post {
-                for (breach in newBreaches) {
-                    showBreachNotification(breach)
+                for (alert in newBreaches) {
+                    when (alert.type) {
+                        "breach" -> {
+                            showBreachNotification(alert)
+                        }
+                        "battery_low" -> {
+                            // ← Battery notification
+                            // NO alarm sound!
+                            showBatteryNotification(alert)
+                        }
+                    }
                 }
             }
             
@@ -442,6 +462,129 @@ class BreachPollingService : Service() {
         }, 100L)
     }
 
+    private fun showBatteryNotification(
+        alert: BreachAlert
+    ) {
+        val notificationId = Math.abs(
+            (alert.deviceId + "battery")
+                .hashCode()) + 3000
+        
+        val title = "🔋 Low Battery - " +
+            "Room ${alert.roomId}"
+        val body = if (alert.battery > 0) {
+            "${alert.deviceId} battery at " +
+            "${alert.battery}% - " +
+            "Please charge the tablet!"
+        } else {
+            alert.message
+        }
+        
+        // ← ACK intent for battery
+        val ackIntent = Intent(
+            this,
+            AcknowledgeReceiver::class.java
+        ).apply {
+            action = "ACK_BREACH"
+            putExtra("alertId", alert.alertId)
+            putExtra("deviceId", alert.deviceId)
+            putExtra("notificationId",
+                notificationId)
+        }
+        val ackPI = PendingIntent.getBroadcast(
+            this,
+            notificationId + 3000,
+            ackIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        // ← Open app intent
+        val openIntent = Intent(
+            this, MainActivity::class.java
+        ).apply {
+            flags =
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("deviceId", alert.deviceId)
+        }
+        val openPI = PendingIntent.getActivity(
+            this,
+            notificationId,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        // ← Build BATTERY notification
+        // Different from breach:
+        // - Yellow color not red
+        // - Normal notification sound
+        // - CAN be swiped away
+        // - NO full screen intent
+        // - NO ongoing
+        // - NO alarm sound
+        val notification = NotificationCompat
+            .Builder(this, "battery_alerts")
+            .setSmallIcon(
+                android.R.drawable
+                    .ic_lock_idle_low_battery)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(body)
+            )
+            // ← HIGH not MAX (not as urgent)
+            .setPriority(
+                NotificationCompat.PRIORITY_HIGH)
+            // ← Warning category
+            .setCategory(
+                NotificationCompat
+                    .CATEGORY_STATUS)
+            // ← CAN be swiped away
+            .setAutoCancel(true)
+            .setOngoing(false)
+            // ← NORMAL notification sound
+            .setSound(RingtoneManager
+                .getDefaultUri(
+                    RingtoneManager
+                        .TYPE_NOTIFICATION))
+            // ← Gentle vibration
+            .setVibrate(longArrayOf(
+                0, 300, 200, 300))
+            // ← YELLOW color for battery
+            .setColor(0xFFF59E0B.toInt())
+            // ← NOT full screen
+            .setContentIntent(openPI)
+            .addAction(
+                android.R.drawable.ic_menu_send,
+                "✅ Acknowledge",
+                ackPI
+            )
+            .addAction(
+                android.R.drawable.ic_menu_view,
+                "📱 Dashboard",
+                openPI
+            )
+            .setGroup("hotel_battery")
+            .setShowWhen(true)
+            .setWhen(System.currentTimeMillis())
+            .build()
+        
+        try {
+            NotificationManagerCompat.from(this)
+                .notify(notificationId, notification)
+            Log.i("PollingService",
+                "🔋 Battery notification: $title")
+        } catch (e: Exception) {
+            Log.e("PollingService",
+                "Battery notify error: $e")
+        }
+        
+        // ← NO alarm sound for battery!
+        // Just notification sound in channel
+    }
+
     private fun wakeScreen() {
         try {
             val pm = getSystemService(
@@ -499,6 +642,40 @@ class BreachPollingService : Service() {
             setSound(null, null)
         }
         
+        // ← Battery channel (NEW)
+        val batteryChannel = NotificationChannel(
+            "battery_alerts",
+            "Battery Alerts",
+            // ← DEFAULT importance
+            // not HIGH like breach
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description =
+                "Low battery warnings"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(
+                0, 300, 200, 300)
+            enableLights(true)
+            lightColor = Color.YELLOW
+            setShowBadge(true)
+            // ← Do NOT bypass DND
+            // Battery is not emergency
+            setBypassDnd(false)
+            lockscreenVisibility =
+                Notification.VISIBILITY_PUBLIC
+            // ← Normal notification sound
+            setSound(
+                RingtoneManager.getDefaultUri(
+                    RingtoneManager
+                        .TYPE_NOTIFICATION),
+                AudioAttributes.Builder()
+                    .setUsage(
+                        AudioAttributes
+                            .USAGE_NOTIFICATION)
+                    .build()
+            )
+        }
+        
         val serviceChannel = NotificationChannel(
             SERVICE_CHANNEL,
             "Security Monitor",
@@ -514,7 +691,12 @@ class BreachPollingService : Service() {
         nm.createNotificationChannel(
             breachChannel)
         nm.createNotificationChannel(
+            batteryChannel)
+        nm.createNotificationChannel(
             serviceChannel)
+        
+        Log.i(TAG,
+            "✅ All notification channels created")
     }
 
     override fun onDestroy() {
@@ -533,5 +715,7 @@ data class BreachAlert(
     val alertId: String,
     val deviceId: String,
     val roomId: String,
-    val message: String
+    val message: String,
+    val type: String = "breach",
+    val battery: Int = -1
 )

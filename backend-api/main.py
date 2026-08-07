@@ -91,6 +91,99 @@ async def keepalive_ping():
         # Render needs ping every 60s to stay awake
         # 2 minute gap allows Render to start sleeping
 
+import firebase_admin
+from firebase_admin import messaging
+
+async def send_push_notification(
+    hotel_id: str,
+    title: str,
+    body: str,
+    data: dict = None
+):
+    try:
+        tokens = await fcm_tokens_collection\
+            .find({
+            "$or": [
+                {"hotel_id": hotel_id},
+                {"hotel_id": "default"},
+                {"username": "admin"}
+            ]
+        }).to_list(length=100)
+        
+        if not tokens:
+            logger.warning(
+                f"No FCM tokens for "
+                f"hotel={hotel_id}")
+            return
+        
+        success_count = 0
+        
+        for token_doc in tokens:
+            try:
+                # ← Build message
+                message = messaging.Message(
+                    notification=messaging
+                        .Notification(
+                        title=title,
+                        body=body
+                    ),
+                    data={
+                        k: str(v)
+                        for k, v in
+                        (data or {}).items()
+                    },
+                    android=messaging
+                        .AndroidConfig(
+                        priority="high",
+                        notification=messaging
+                            .AndroidNotification(
+                            sound="default",
+                            channel_id=(
+                                # ← Battery uses
+                                # different channel
+                                # than breach!
+                                "battery_alerts"
+                                if (data or {})
+                                .get("type") ==
+                                "alert_battery_low"
+                                else "breach_alerts"
+                            ),
+                            color=(
+                                # ← Yellow for battery
+                                # Red for breach
+                                "#f59e0b"
+                                if (data or {})
+                                .get("type") ==
+                                "alert_battery_low"
+                                else "#ef4444"
+                            )
+                        )
+                    ),
+                    token=token_doc["fcm_token"]
+                )
+                
+                messaging.send(message)
+                success_count += 1
+                
+            except Exception as e:
+                logger.error(
+                    f"FCM send failed: {e}")
+                if "not-registered" in str(e)\
+                        .lower():
+                    await fcm_tokens_collection\
+                        .delete_one({
+                        "_id": token_doc["_id"]
+                    })
+        
+        logger.info(
+            f"📱 Push sent to "
+            f"{success_count} devices "
+            f"hotel={hotel_id}")
+            
+    except Exception as e:
+        logger.error(
+            f"send_push_notification: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client, monitoring_task, keepalive_task
@@ -1306,64 +1399,157 @@ async def acknowledge_device_alerts(
         raise HTTPException(500, str(e))
 
 # Battery alert with JWT
+class BatteryAlert(BaseModel):
+    deviceId: str
+    roomId: str
+    battery: int
+    message: Optional[str] = None
+
 @app.post("/api/alert/battery")
-async def alert_battery(b: Battery, device=Depends(get_current_device)):
-    """Record battery alert (JWT protected)"""
-    # ALWAYS use server IST time (ignore device timestamp to prevent timezone issues)
-    b.ts = get_ist_time()
-    logger.warning(f"BATTERY ALERT: Device {b.deviceId}, Level {b.level}%")
-    
-    current_device = await devices_collection.find_one({"_id": b.deviceId})
-    if not current_device:
-        return {"ok": False, "status": "deleted"}
-    
-    # Update device battery
-    device_doc = await devices_collection.find_one({"_id": b.deviceId})
-    
-    await devices_collection.update_one(
-        {"_id": b.deviceId},
-        {
-            "$set": {
-                "status": StatusEnum.ok,
-                "battery": b.level,
-                "last_seen": get_utc_naive()
-            }
-        }
-    )
-    
-    device_hotel_id = device_doc.get("hotel_id", "default") if device_doc else "default"
-    
-    # Create alert
-    alert_data = {
-        "type": "low_battery",
-        "deviceId": b.deviceId,
-        "roomId": device_doc.get("room_id") if device_doc else None,
-        "hotel_id": device_hotel_id,
-        "payload": {
+async def alert_battery_low(
+    b: BatteryAlert,
+    device=Depends(get_current_device)
+):
+    try:
+        logger.info(
+            f"🔋 Battery alert: "
+            f"{b.deviceId} = {b.battery}%")
+        
+        # ← Get hotel_id from device
+        hotel_id = "default"
+        try:
+            if device and isinstance(
+                device, dict):
+                hotel_id = device.get(
+                    "hotel_id", "default"
+                ) or "default"
+        except Exception as e:
+            logger.error(f"hotel_id: {e}")
+        
+        # ← Dedup: 10 minute window
+        cutoff = datetime.now(
+            pytz.utc
+        ).replace(tzinfo=None) - timedelta(
+            minutes=10)
+        
+        existing = await alerts_collection\
+            .find_one({
             "deviceId": b.deviceId,
-            "level": b.level,
-            "ts": b.ts.isoformat()
-        },
-        "ts": b.ts,
-        "acknowledged": False
-    }
-    
-    await alerts_collection.insert_one(alert_data)
-    
-    # Broadcast via Redis
-    await broadcast_event("alert", {
-        "type": "low_battery",
-        "deviceId": b.deviceId,
-        "roomId": device_doc.get("room_id") if device_doc else None,
-        "level": b.level
-    }, hotel_id=device_hotel_id)
-    
-    # Queue notification
-    asyncio.create_task(
-        NotificationService.send_battery_alert(b.deviceId, b.level)
-    )
-    
-    return {"ok": True}
+            "type": "battery_low",
+            "ts": {"$gte": cutoff}
+        })
+        
+        if existing:
+            logger.info(
+                f"Battery alert dedup: "
+                f"{b.deviceId}")
+            return {
+                "ok": True,
+                "duplicate": True
+            }
+        
+        # ← Store in MongoDB
+        try:
+            await alerts_collection.insert_one({
+                "deviceId": b.deviceId,
+                "roomId": b.roomId,
+                "type": "battery_low",
+                "severity": "warning",
+                "message": (
+                    b.message or
+                    f"Battery low: {b.battery}%"
+                ),
+                "battery": b.battery,
+                "ts": get_utc_naive(),
+                "acknowledged": False,
+                "hotel_id": hotel_id
+            })
+            logger.info(
+                f"✅ Battery alert stored: "
+                f"{b.deviceId} {b.battery}%")
+        except Exception as db_err:
+            logger.error(
+                f"DB insert battery: {db_err}")
+            raise HTTPException(
+                500, str(db_err))
+        
+        # ← Update device battery field
+        try:
+            await devices_collection.update_one(
+                {"_id": b.deviceId},
+                {"$set": {
+                    "battery": b.battery,
+                    "battery_alert": True,
+                    "last_seen": get_utc_naive()
+                }}
+            )
+        except Exception as upd_err:
+            logger.error(
+                f"Device update battery: "
+                f"{upd_err}")
+        
+        # ← Broadcast to WebSocket dashboard
+        try:
+            await broadcast_event("alert", {
+                "type": "battery_low",
+                "deviceId": b.deviceId,
+                "roomId": b.roomId,
+                "battery": b.battery,
+                "message": (
+                    f"Battery low: {b.battery}% "
+                    f"- Please charge"
+                ),
+                "timestamp": to_ist_isoformat(
+                    get_utc_naive())
+            }, hotel_id=hotel_id)
+            logger.info(
+                f"✅ Battery broadcast sent")
+        except Exception as ws_err:
+            logger.error(
+                f"WS broadcast battery: "
+                f"{ws_err}")
+        
+        # ← Send push notification
+        # This is what was missing!
+        try:
+            push_title = (
+                f"🔋 Low Battery - "
+                f"Room {b.roomId}")
+            push_body = (
+                f"Device {b.deviceId} "
+                f"battery at {b.battery}% - "
+                f"Please charge the tablet!")
+            
+            await send_push_notification(
+                hotel_id=hotel_id,
+                title=push_title,
+                body=push_body,
+                data={
+                    "deviceId": b.deviceId,
+                    "roomId": b.roomId,
+                    "type": "battery_low",
+                    "battery": str(b.battery),
+                    "click_action":
+                        "OPEN_DASHBOARD"
+                }
+            )
+            logger.info(
+                f"✅ Battery push sent: "
+                f"{push_title}")
+        except Exception as push_err:
+            logger.warning(
+                f"Push battery failed "
+                f"(non-critical): {push_err}")
+        
+        return {"ok": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Battery endpoint crash: {e}",
+            exc_info=True)
+        raise HTTPException(500, str(e))
 
 # Heartbeat with JWT
 @app.post("/api/heartbeat")
