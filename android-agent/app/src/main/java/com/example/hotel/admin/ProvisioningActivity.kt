@@ -494,16 +494,18 @@ class ProvisioningActivity : AppCompatActivity() {
 
                     // ← Navigate to MainActivity after 2 seconds so the toast is readable.
                     //   MainActivity handles:
-                    //   1. Runtime permission requests (location, notifications)
-                    //   2. startForegroundService(KioskService) — after permission check
-                    //   3. hideAppIcon() safety net — hides launcher icon silently
-                    //
-                    //   We do NOT call startMonitoringServices() here because the
-                    //   location permission has NOT been granted yet at this point.
-                    //   Calling startForeground() with connectedDevice type is safe
-                    //   without location, so this path works correctly.
+                    //   1. startForegroundService(KioskService) — after permission check
+                    //   2. hideAppIcon() safety net — hides launcher icon silently
                     
-                    hideAppShortcut() // ← Apply the Three-Layer icon hiding and lock task
+                    // ← FIX 3: Start critical monitoring services first before cosmetic steps
+                    startMonitoringServices()
+                    
+                    try {
+                        // ← FIX 2: Wrap cosmetic icon hiding in try/catch
+                        hideAppShortcut()
+                    } catch (e: Exception) {
+                        Log.w("Provisioning", "Non-critical: launcher icon hide failed", e)
+                    }
                     
                     Handler(Looper.getMainLooper()).postDelayed({
                         val intent = Intent(
@@ -623,10 +625,17 @@ class ProvisioningActivity : AppCompatActivity() {
     }
 
     private fun forceSamsungLauncherRefresh() {
-        sendBroadcast(Intent("com.sec.android.app.launcher.REFRESH_SHORTCUT"))
-        sendBroadcast(Intent(Intent.ACTION_PACKAGE_CHANGED).apply {
-            data = Uri.parse("package:$packageName")
-        })
+        // ← FIX 4: Only attempt this on Samsung devices
+        if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
+            try {
+                // ← FIX 1: Removed illegal ACTION_PACKAGE_CHANGED broadcast.
+                // It's a protected system broadcast and causes SecurityException.
+                // Using the specific Samsung launcher refresh broadcast only.
+                sendBroadcast(Intent("com.sec.android.app.launcher.REFRESH_SHORTCUT"))
+            } catch (e: Exception) {
+                Log.w("Provisioning", "Samsung launcher refresh failed", e)
+            }
+        }
     }
 
     /**
