@@ -7,8 +7,8 @@ from typing import Optional
 import time
 import pytz  # type: ignore
 from db import (
-    db,
     db, devices_collection, alerts_collection, rooms_collection, hotels_collection,
+    fcm_tokens_collection, sessions_collection,
     StatusEnum, init_db
 )
 from config import settings
@@ -98,7 +98,7 @@ async def send_push_notification(
     hotel_id: str,
     title: str,
     body: str,
-    data: dict = None
+    data: Optional[dict] = None
 ):
     try:
         tokens = await fcm_tokens_collection\
@@ -1642,7 +1642,37 @@ async def heartbeat(h: Heartbeat, device=Depends(get_current_device)):
     # This handles devices with NO room config
     # that get stuck in breach forever
     # ← FIXED: Clear breach WITHOUT re-broadcasting old alerts
-    if existing_status == StatusEnum.breach and        h.rssi > -120 and        h.wifiBssid not in ["02:00:00:00:00:00", "00:00:00:00:00:00"]:
+    if existing_status == StatusEnum.breach and \
+       h.rssi > -120 and \
+       h.wifiBssid not in ["02:00:00:00:00:00", "00:00:00:00:00:00"]:
+        
+        # ← Check if breach was from wrong network
+        # If wrong network breach → DO NOT clear
+        recent_wrong_net = await alerts_collection.find_one({
+            "deviceId": h.deviceId,
+            "type": "breach",
+            "message": {"$regex": "Wrong WiFi"},
+            "acknowledged": False,
+            "ts": {
+                "$gte": datetime.now(pytz.utc).replace(tzinfo=None) - timedelta(minutes=5)
+            }
+        })
+        
+        if recent_wrong_net:
+            logger.info(
+                f"Wrong network breach active "
+                f"for {h.deviceId} — "
+                f"not clearing on heartbeat")
+            # ← Update last_seen but keep breach
+            await devices_collection.update_one(
+                {"_id": h.deviceId},
+                {"$set": {
+                    "last_seen": get_utc_naive(),
+                    "rssi": h.rssi,
+                    "battery": h.battery
+                }}
+            )
+            return {"ok": True}
         
         # ← Clear breach
         await devices_collection.update_one(

@@ -57,6 +57,47 @@ class KioskService : Service() {
     private var isRunning = false
     private var heartbeatJob: Job? = null
 
+    private fun startHeartbeatLoop() {
+        heartbeatJob = serviceScope.launch {
+            while (isActive) {
+                try {
+                    heartbeatWakeLock.acquire(35_000L)
+                    try {
+                        ensureAuthorizedNetworkSaved()
+                        
+                        val networkStatus = checkCurrentNetwork()
+                        
+                        when (networkStatus) {
+                            NetworkStatus.WRONG_NETWORK -> {
+                                Log.e("KioskService", "🚨 WRONG NETWORK DETECTED!")
+                                triggerWrongNetworkBreach()
+                            }
+                            NetworkStatus.WIFI_OFF -> {
+                                Log.e("KioskService", "WiFi OFF")
+                            }
+                            NetworkStatus.STABILIZING -> {
+                                Log.d("KioskService", "⏳ WiFi stabilizing — skipping network check, sending heartbeat")
+                                sendHeartbeatToBackend()
+                            }
+                            else -> {
+                                sendHeartbeatToBackend()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("KioskService", "❌ Heartbeat failed: ${e.message}")
+                    } finally {
+                        if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
+                    }
+                } catch (e: Exception) {
+                    Log.e("KioskService", "❌ Heartbeat outer error: ${e.message}")
+                    if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
+                }
+                
+                delay(10_000L)
+            }
+        }
+    }
+
     private fun startKeepalive() {
         CoroutineScope(Dispatchers.IO).launch {
             while (true) {
@@ -124,6 +165,7 @@ class KioskService : Service() {
         // ← FIX: skip one network check after WiFi restores to prevent
         // false "wrong network" breach during SSID propagation delay.
         @Volatile var skipNextNetworkCheck = false
+        @Volatile var wrongNetworkActive = false
         const val WIFI_STABILIZE_DELAY = 20_000L // 20 seconds
     }
 
@@ -175,66 +217,7 @@ class KioskService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_HEARTBEAT) {
-            // Alarm fired — send heartbeat then schedule next
-            serviceScope.launch {
-                try {
-                    heartbeatWakeLock.acquire(35_000L)
-                    try {
-                        ensureAuthorizedNetworkSaved()
-                        
-                        val networkStatus = checkCurrentNetwork()
-                        
-                        when (networkStatus) {
-                            NetworkStatus.WRONG_NETWORK -> {
-                                Log.e("KioskService", "🚨 WRONG NETWORK DETECTED in heartbeat!")
-                                triggerWrongNetworkBreach()
-                            }
-                            NetworkStatus.WIFI_OFF -> {
-                                Log.e("KioskService", "WiFi OFF in heartbeat")
-                                // WiFi OFF breach is handled by ScreenAndWiFiReceiver / SixSignalMonitor
-                            }
-                            NetworkStatus.STABILIZING -> {
-                                // ← FIX: WiFi just connected — SSID not readable yet
-                                // Do NOT breach; send a normal heartbeat so the backend
-                                // knows we are still alive during the stabilization window.
-                                Log.d("KioskService",
-                                    "⏳ WiFi stabilizing — skipping network check, sending heartbeat")
-                                sendHeartbeatToBackend()
-                            }
-                            NetworkStatus.CORRECT_NETWORK, NetworkStatus.UNKNOWN -> {
-                                sendHeartbeatToBackend()
-                            }
-                        }
-                    } catch (e: java.io.IOException) {
-                        Log.w("KioskService", "⚠️ Heartbeat network failed (Render slow?): ${e.message}")
-                        // Retry once after 2s — alarm will handle next full cycle
-                        delay(2_000L)
-                        try {
-                            val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
-                            val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
-                            val roomId = prefs.getString("room_id", "UNKNOWN")!!
-                            val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
-                            val auth = prefs.getString("jwt_token", null)?.let { "Bearer $it" } ?: return@launch
-                            val repo = AgentRepository.default(applicationContext).alerts
-                            
-                            val bssidActual = wifiFence.getCurrentBssid() ?: bssid
-                            repo.heartbeat(auth, HeartbeatRequest(deviceId, roomId, bssidActual, lastKnownRssi, getBatteryLevel()))
-                            Log.d("KioskService", "✅ Retry succeeded")
-                        } catch (e2: Exception) {
-                            Log.e("KioskService", "❌ Retry also failed: ${e2.message}")
-                        }
-                    } catch (e: Exception) {
-                        Log.e("KioskService", "❌ Heartbeat failed: ${e.message}")
-                    } finally {
-                        if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
-                    }
-                } catch (e: Exception) {
-                    Log.e("KioskService", "❌ Heartbeat outer error: ${e.message}")
-                    if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
-                }
-                // Schedule next alarm AFTER heartbeat attempt completes
-                scheduleNextHeartbeat()
-            }
+            // Heartbeat is now handled by startHeartbeatLoop
             return START_NOT_STICKY
         }
 
@@ -247,7 +230,7 @@ class KioskService : Service() {
         if (!isRunning) {
             isRunning = true
             startMonitoring()
-            scheduleNextHeartbeat() // First alarm fires in 10s
+            startHeartbeatLoop()
         }
         return START_NOT_STICKY
     }
@@ -791,6 +774,7 @@ class KioskService : Service() {
     }
 
     private fun checkCurrentNetwork(): NetworkStatus {
+        Log.d("KioskService", "DEBUG: checkCurrentNetwork entered at ${System.currentTimeMillis()}")
         // ← FIX: After WiFi reconnect, skip one check to let SSID fully
         // propagate. ScreenAndWiFiReceiver sets this on WIFI_STATE_ENABLED.
         if (skipNextNetworkCheck) {
@@ -849,6 +833,12 @@ class KioskService : Service() {
 
         // WiFi has fully stabilized
         wifiStabilized = true
+
+        if (skipNextNetworkCheck) {
+            Log.d("KioskService", "Skipping one network check while SSID propagates")
+            skipNextNetworkCheck = false
+            return NetworkStatus.STABILIZING
+        }
 
         val current = getCurrentNetworkIdentity()
 
@@ -920,6 +910,12 @@ class KioskService : Service() {
         return if (matchResult == true) {
             // ← Mark stabilizer as complete so next reconnect re-arms correctly
             wifiTurnedOnAt = SystemClock.elapsedRealtime() - WIFI_STABILIZE_DELAY - 1_000L
+            if (wrongNetworkActive) {
+                Log.i("KioskService", "✅ Authorized network restored")
+                wrongNetworkActive = false
+                hideBreachOverlay()
+                // Recovery heartbeat is sent in the heartbeat loop
+            }
             NetworkStatus.CORRECT_NETWORK
         } else {
             Log.e("KioskService",
@@ -937,6 +933,12 @@ class KioskService : Service() {
      */
     private suspend fun sendHeartbeatToBackend() {
         val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
+        
+        if (wrongNetworkActive) {
+            Log.w("KioskService", "On wrong network — skipping heartbeat to prevent breach auto-clear")
+            return
+        }
+        
         val deviceId = prefs.getString("device_id", "TAB-UNKNOWN")!!
         val roomId = prefs.getString("room_id", "UNKNOWN")!!
         val bssid = prefs.getString("bssid", "AA:BB:CC:DD:EE:FF")!!
@@ -979,6 +981,7 @@ class KioskService : Service() {
     }
 
     private fun triggerWrongNetworkBreach() {
+        wrongNetworkActive = true
         val timeSinceConnect = SystemClock.elapsedRealtime() - wifiTurnedOnAt
         if (wifiTurnedOnAt > 0L && timeSinceConnect < WIFI_STABILIZE_DELAY) {
             Log.d("KioskService",
@@ -1016,8 +1019,19 @@ class KioskService : Service() {
         
         Log.e("KioskService", "🚨 $reason")
         
-        // ← FIXED: Show orange screen locally
-        // Same as WiFi OFF breach screen
+        // Show orange screen locally
+        showBreachOverlay(reason)
+        
+        // Send breach to backend
+        try {
+            val monitor = com.example.hotel.security.SixSignalMonitor(this)
+            monitor.triggerBreach(reason = reason, rssi = -127, isImmediate = true)
+        } catch (e: Exception) {
+            Log.e("KioskService", "Failed to trigger monitor breach: $e")
+        }
+    }
+
+    private fun showBreachOverlay(reason: String) {
         try {
             val lockIntent = Intent(
                 this,
@@ -1025,6 +1039,7 @@ class KioskService : Service() {
             ).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
                 addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
@@ -1034,16 +1049,15 @@ class KioskService : Service() {
         } catch (e: Exception) {
             Log.e("KioskService", "Orange screen failed: $e")
         }
-        
-        // ← Send breach to backend
-        val si = Intent(this, com.example.hotel.security.WiFiMonitoringService::class.java).apply {
-            action = "WRONG_NETWORK_BREACH"
-            putExtra("BREACH_REASON", reason)
-            putExtra("IMMEDIATE_BREACH", true)
-            putExtra("FORCED_RSSI", -127)
+    }
+
+    private fun hideBreachOverlay() {
+        try {
+            sendBroadcast(Intent("com.example.hotel.WIFI_RECOVERED"))
+            Log.i("KioskService", "✅ Breach overlay hidden")
+        } catch (e: Exception) {
+            Log.e("KioskService", "Hide overlay: $e")
         }
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(si)
-        else startService(si)
     }
 
     // Call this once on first start AND after each heartbeat
@@ -1057,7 +1071,9 @@ class KioskService : Service() {
         )
         
         val triggerAt = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MS
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             val alarmInfo = AlarmManager.AlarmClockInfo(triggerAt, pendingIntent)
             alarmManager.setAlarmClock(alarmInfo, pendingIntent)
         } else {

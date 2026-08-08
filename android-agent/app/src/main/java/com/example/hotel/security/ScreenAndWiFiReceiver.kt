@@ -174,6 +174,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         liveSsid:  String? = null,
         source:    String  = "unknown"
     ) {
+        Log.d(DBG, "DEBUG: checkNetworkAuthorization entered at ${System.currentTimeMillis()} with source=$source")
         val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
         val authorizedBssid = prefs.getString("authorized_bssid", "") ?: ""
         val authorizedSsid = prefs.getString("authorized_ssid", "") ?: ""
@@ -183,10 +184,10 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         
         @Suppress("DEPRECATION")
         val info = wifiManager.connectionInfo
-        @Suppress("DEPRECATION")
-        val currentBssid = info?.bssid ?: ""
-        @Suppress("DEPRECATION")
-        val currentSsid = info?.ssid?.replace("\"", "")?.trim() ?: ""
+        
+        // ← FIX: Use the instantly-provided live values if available, instead of waiting for connectionInfo to update
+        val currentBssid = if (!liveBssid.isNullOrEmpty()) liveBssid else (info?.bssid ?: "")
+        val currentSsid = if (!liveSsid.isNullOrEmpty()) liveSsid else (info?.ssid?.replace("\"", "")?.trim() ?: "")
         
         Log.d(DBG, "Network auth check: current SSID='$currentSsid' BSSID='$currentBssid' | authorized SSID='$authorizedSsid' BSSID='$authorizedBssid'")
         
@@ -284,6 +285,7 @@ class ScreenAndWiFiReceiver : BroadcastReceiver() {
         }
 
     private fun triggerNetworkBreach(context: Context, reason: String) {
+        Log.d(DBG, "DEBUG: triggerNetworkBreach called at ${System.currentTimeMillis()} for reason=$reason")
         Log.e(DBG, "triggerNetworkBreach() reason='$reason'")
         val si = Intent(context, WiFiMonitoringService::class.java).apply {
             action = "WRONG_NETWORK_BREACH"

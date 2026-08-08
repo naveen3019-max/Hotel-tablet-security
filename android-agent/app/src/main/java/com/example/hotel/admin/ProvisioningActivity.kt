@@ -399,6 +399,27 @@ class ProvisioningActivity : AppCompatActivity() {
                 
                 // Register device with backend
                 android.util.Log.d("Provisioning", "Calling register API...")
+                
+                // ← FIX: Block registration if Doze battery optimization exemption is not granted
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                val isIgnoringBatteryOpt = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || pm.isIgnoringBatteryOptimizations(packageName)
+                android.util.Log.d("Provisioning", "DEBUG: isIgnoringBatteryOptimizations = $isIgnoringBatteryOpt")
+                
+                if (!isIgnoringBatteryOpt) {
+                    android.util.Log.e("Provisioning", "🚨 Provisioning Blocked: Battery optimization exemption not granted.")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            this@ProvisioningActivity,
+                            "Allow unrestricted battery usage to complete registration.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        statusText.text = "Registration blocked: Battery exemption required."
+                        registerButton.isEnabled = true
+                        requestBatteryOptimizationExemption()
+                    }
+                    return@launch
+                }
+                
                 val startTime = System.currentTimeMillis()
                 // â† FIXED: Verified hotelId is set to the staff-entered hotelUsername, not hardcoded "default"
                 val registerResponse = repo.register(tempAuth, RegisterRequest(deviceId, roomId, hotelUsername, staffName))

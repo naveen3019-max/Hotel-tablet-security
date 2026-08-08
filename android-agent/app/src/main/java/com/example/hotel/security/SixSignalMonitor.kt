@@ -1,6 +1,7 @@
 package com.example.hotel.security
 
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
@@ -137,10 +138,13 @@ class SixSignalMonitor(private val context: Context) {
         isImmediate: Boolean = false
     ) {
         val now = SystemClock.elapsedRealtime()
+        Log.d(TAG, "DEBUG: triggerBreach() called with isImmediate=$isImmediate at ${System.currentTimeMillis()}")
 
-        if (now - Companion.lastBreachSentTime < BREACH_COOLDOWN) {
-            Log.w(TAG, "Breach cooldown — skip")
-            return
+        if (!isImmediate) {
+            if (now - Companion.lastBreachSentTime < BREACH_COOLDOWN) {
+                Log.w(TAG, "Breach cooldown — skip")
+                return
+            }
         }
 
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -155,7 +159,18 @@ class SixSignalMonitor(private val context: Context) {
         Companion.lastBreachSentTime = now
         Companion.isBreachActive = true
 
-        Log.e(TAG, "🚨 BREACH: $reason Device:$deviceId RSSI:$rssi")
+        Log.e(TAG, "🚨 BREACH: $reason Device:$deviceId RSSI:$rssi immediate:$isImmediate")
+        
+        // ← FIX BUG B: Launch Orange overlay directly from here for ALL breaches
+        try {
+            val lockIntent = Intent(context, com.example.hotel.ui.LockActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or Intent.FLAG_ACTIVITY_NO_HISTORY)
+            }
+            context.startActivity(lockIntent)
+            Log.i(TAG, "✅ Orange screen triggered directly from SixSignalMonitor")
+        } catch (e: Exception) {
+            Log.e(TAG, "Orange screen failed: $e")
+        }
 
         fireBreach(rssi = if (rssi > -10) -127 else rssi, reason = reason)
     }
@@ -228,10 +243,10 @@ class SixSignalMonitor(private val context: Context) {
 
                 var posted = false
 
-                // ← First 5 attempts: immediate
-                // No delay between attempts
-                // Catches Render if already awake
-                for (attempt in 1..5) {
+                // ← First 10 attempts: NO gap
+                // Fires as fast as Render responds
+                // If Render awake: success in <3s!
+                for (attempt in 1..10) {
                     if (posted) break
                     Log.d(TAG, "Breach POST attempt $attempt/15 (fast phase)")
                     posted = attemptBreachPost(
@@ -240,8 +255,9 @@ class SixSignalMonitor(private val context: Context) {
                     if (posted) {
                         Log.i(TAG, "✅ Breach sent attempt $attempt")
                     }
-                    // ← NO delay for first 5!
-                    // Just immediately retry
+                    // ← NO delay between attempts!
+                    // Each attempt is 3s timeout
+                    // 10 × 3s = 30s max coverage
                 }
 
                 if (posted) {
@@ -249,9 +265,8 @@ class SixSignalMonitor(private val context: Context) {
                     return@Thread
                 }
 
-                // ← Next 10 attempts: 1s gap
-                // Render should be awake by now
-                for (attempt in 6..15) {
+                // ← Last 5 attempts: 1s gap
+                for (attempt in 11..15) {
                     if (posted) break
                     Log.d(TAG, "Breach POST attempt $attempt/15 (slow phase)")
                     posted = attemptBreachPost(
@@ -473,6 +488,7 @@ class SixSignalMonitor(private val context: Context) {
 
     // ← Only checks WiFi ON/OFF. SSID comparison is done in KioskService heartbeat.
     private fun performSecurityCheck(skipConfirmationDelay: Boolean = false) {
+        Log.d(TAG, "DEBUG: performSecurityCheck entered at ${System.currentTimeMillis()}")
         if (isStartupGracePeriod) return
 
         // ← FIX: If WiFi just turned on and is still stabilizing, skip this check.
@@ -482,8 +498,9 @@ class SixSignalMonitor(private val context: Context) {
         if (wifiOnAt > 0L) {
             val timeSinceConnect = SystemClock.elapsedRealtime() - wifiOnAt
             if (timeSinceConnect < KioskService.WIFI_STABILIZE_DELAY) {
-                // WiFi is still stabilizing — reset loss timer and skip
-                firstWifiLossTime = 0L
+                // WiFi is still stabilizing — skip check.
+                // FIX BUG A: Do NOT reset firstWifiLossTime here. If we reset it, the 8s timer is re-armed
+                // on every tick while stabilizing, meaning it never expires.
                 Log.d(TAG,
                     "⏳ WiFi stabilizing in SixSignalMonitor " +
                     "(${timeSinceConnect}ms / ${KioskService.WIFI_STABILIZE_DELAY}ms) " +

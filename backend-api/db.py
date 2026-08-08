@@ -29,6 +29,8 @@ hotels_collection = db.hotels
 devices_collection = db.devices
 rooms_collection = db.rooms
 alerts_collection = db.alerts
+fcm_tokens_collection = db.fcm_tokens
+sessions_collection = db.sessions
 
 class StatusEnum(str, Enum):
     ok = "ok"

@@ -265,6 +265,7 @@ class WiFiMonitoringService : Service() {
                 val transportInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     caps.transportInfo
                 } else null
+                Log.d(DBG, "DEBUG: NetworkCallback onCapabilitiesChanged at ${System.currentTimeMillis()}")
                 Log.d(DBG, "🔔 NetworkCallback.onCapabilitiesChanged #$capChangedCount " +
                         "network=$network transportInfoClass=${transportInfo?.javaClass?.simpleName ?: "null"}")
 
@@ -374,7 +375,10 @@ class WiFiMonitoringService : Service() {
         
         val triggerAt = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MS
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        // ← FIX: Use setExactAndAllowWhileIdle so the security check is never deferred by Doze Mode
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             val alarmInfo = AlarmManager.AlarmClockInfo(triggerAt, pendingIntent)
             am.setAlarmClock(alarmInfo, pendingIntent)
         } else {
