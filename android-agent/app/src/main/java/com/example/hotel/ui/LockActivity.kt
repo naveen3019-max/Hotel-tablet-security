@@ -36,6 +36,7 @@ class LockActivity : AppCompatActivity() {
     }
     
     private fun startWifiMonitoring() {
+        val expectedSsid = intent.getStringExtra("expected_ssid")
         // Check WiFi status every 2 seconds and auto-close if reconnected
         wifiCheckRunnable = object : Runnable {
             override fun run() {
@@ -48,8 +49,15 @@ class LockActivity : AppCompatActivity() {
                     val connectionInfo = wifiManager.connectionInfo
                     val currentRssi = connectionInfo?.rssi ?: -127
                     val isConnected = connectionInfo != null && connectionInfo.networkId != -1
+                    val currentSsid = connectionInfo?.ssid?.replace("\"", "")
                     
-                    if (isConnected && currentRssi >= minRssi) {
+                    val isAuthorizedNetwork = if (expectedSsid != null) {
+                        currentSsid == expectedSsid
+                    } else {
+                        true
+                    }
+                    
+                    if (isConnected && currentRssi >= minRssi && isAuthorizedNetwork) {
                         android.util.Log.e("LockActivity", "✅ WiFi reconnected (RSSI: $currentRssi >= $minRssi) - AUTO-CLOSING")
                         finish()
                         return
@@ -81,23 +89,31 @@ class LockActivity : AppCompatActivity() {
         )
         
         // CRITICAL: Check WiFi status immediately when starting
-        // If WiFi is already connected, close immediately (recovery happened before we launched)
+        // If WiFi is already connected and it's the expected network, close immediately
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val prefs = getSharedPreferences("agent", Context.MODE_PRIVATE)
         val minRssi = prefs.getInt("minRssi", -70)
+        val expectedSsid = intent.getStringExtra("expected_ssid")
         
         if (wifiManager.isWifiEnabled) {
             @Suppress("DEPRECATION")
             val connectionInfo = wifiManager.connectionInfo
             val currentRssi = connectionInfo?.rssi ?: -127
             val isConnected = connectionInfo != null && connectionInfo.networkId != -1
+            val currentSsid = connectionInfo?.ssid?.replace("\"", "")
             
-            if (isConnected && currentRssi >= minRssi) {
+            val isAuthorizedNetwork = if (expectedSsid != null) {
+                currentSsid == expectedSsid
+            } else {
+                true
+            }
+            
+            if (isConnected && currentRssi >= minRssi && isAuthorizedNetwork) {
                 android.util.Log.e("LockActivity", "✅ WiFi is already connected (RSSI: $currentRssi >= $minRssi) - CLOSING IMMEDIATELY")
                 finish()
                 return
             } else {
-                android.util.Log.e("LockActivity", "📊 WiFi status on start: Connected=$isConnected, RSSI=$currentRssi, MinRSSI=$minRssi")
+                android.util.Log.e("LockActivity", "📊 WiFi status on start: Connected=$isConnected, RSSI=$currentRssi, MinRSSI=$minRssi, Expected=$expectedSsid, Current=$currentSsid")
             }
         }
         
@@ -140,7 +156,7 @@ class LockActivity : AppCompatActivity() {
             setBackgroundColor(android.graphics.Color.parseColor("#FF5722"))
         }
 
-        val expectedSsid = intent.getStringExtra("expected_ssid")
+        
         
         val warningText = TextView(this).apply {
             text = if (expectedSsid != null) {
