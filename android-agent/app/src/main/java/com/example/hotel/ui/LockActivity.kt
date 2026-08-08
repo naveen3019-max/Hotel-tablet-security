@@ -140,8 +140,14 @@ class LockActivity : AppCompatActivity() {
             setBackgroundColor(android.graphics.Color.parseColor("#FF5722"))
         }
 
+        val expectedSsid = intent.getStringExtra("expected_ssid")
+        
         val warningText = TextView(this).apply {
-            text = "⚠️ DEVICE MOVED OUT OF ROOM\n\nStaff has been notified.\n\nPlease return device to room."
+            text = if (expectedSsid != null) {
+                "⚠️ Network Changed\n\nPlease reconnect to '$expectedSsid'"
+            } else {
+                "⚠️ DEVICE MOVED OUT OF ROOM\n\nStaff has been notified.\n\nPlease return device to room."
+            }
             textSize = 22f
             gravity = Gravity.CENTER
             setTextColor(android.graphics.Color.WHITE)

@@ -148,11 +148,30 @@ class SixSignalMonitor(private val context: Context) {
         }
 
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // ← FIX: Read deviceId dynamically from SharedPreferences at the moment it runs
         val deviceId = prefs.getString("device_id", "") ?: ""
         val roomId = prefs.getString("room_id", "") ?: ""
 
+        // ← FIX: Decouple overlay from backend reporting entirely. Always show local overlay first!
+        try {
+            val lockIntent = Intent(context, com.example.hotel.ui.LockActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or Intent.FLAG_ACTIVITY_NO_HISTORY)
+                // ← FIX: Pass authorized SSID into the overlay for wrong-network breach
+                if (reason.contains("Wrong", ignoreCase = true) || reason.contains("WRONG", ignoreCase = true)) {
+                    val expectedSsid = prefs.getString("authorized_ssid", null)
+                    putExtra("expected_ssid", expectedSsid)
+                }
+            }
+            context.startActivity(lockIntent)
+            Log.i(TAG, "✅ Orange screen triggered directly from SixSignalMonitor")
+        } catch (e: Exception) {
+            Log.e(TAG, "Orange screen failed: $e")
+        }
+
         if (deviceId.isEmpty() || deviceId == "UNKNOWN" || roomId.isEmpty()) {
-            Log.e(TAG, "No deviceId — cannot breach")
+            // ← FIX: don't just drop it — queue and retry since overlay already fired
+            Log.e(TAG, "⚠️ deviceId unavailable — queuing breach for retry and firing local overlay anyway")
+            savePendingBreach(rssi, System.currentTimeMillis(), reason)
             return
         }
 
@@ -160,17 +179,6 @@ class SixSignalMonitor(private val context: Context) {
         Companion.isBreachActive = true
 
         Log.e(TAG, "🚨 BREACH: $reason Device:$deviceId RSSI:$rssi immediate:$isImmediate")
-        
-        // ← FIX BUG B: Launch Orange overlay directly from here for ALL breaches
-        try {
-            val lockIntent = Intent(context, com.example.hotel.ui.LockActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or Intent.FLAG_ACTIVITY_NO_HISTORY)
-            }
-            context.startActivity(lockIntent)
-            Log.i(TAG, "✅ Orange screen triggered directly from SixSignalMonitor")
-        } catch (e: Exception) {
-            Log.e(TAG, "Orange screen failed: $e")
-        }
 
         fireBreach(rssi = if (rssi > -10) -127 else rssi, reason = reason)
     }
@@ -347,6 +355,7 @@ class SixSignalMonitor(private val context: Context) {
             .remove("pending_breach")
             .remove("pending_breach_rssi")
             .remove("breach_detected_at")
+            .remove("pending_breach_reason")
             .apply()
         pendingBreachRssi = null
         if (hadPending) {
@@ -358,14 +367,15 @@ class SixSignalMonitor(private val context: Context) {
      * Persists a breach that failed all POST retries so it can be re-sent
      * once connectivity returns. Only called after all 15 retries fail.
      */
-    private fun savePendingBreach(rssi: Int, breachTimestamp: Long) {
+    private fun savePendingBreach(rssi: Int, breachTimestamp: Long, reason: String = "WiFi disabled (pending)") {
         context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE).edit()
             .putBoolean("pending_breach", true)
             .putInt("pending_breach_rssi", rssi)
             .putLong("breach_detected_at", breachTimestamp)
+            .putString("pending_breach_reason", reason)
             .apply()
         pendingBreachRssi = rssi
-        Log.i(TAG, "💾 Pending breach saved (rssi=$rssi ts=$breachTimestamp)")
+        Log.i(TAG, "💾 Pending breach saved (rssi=$rssi ts=$breachTimestamp reason=$reason)")
     }
 
     /**
@@ -382,6 +392,7 @@ class SixSignalMonitor(private val context: Context) {
 
         val rssi = prefs.getInt("pending_breach_rssi", -127)
         val timestamp = prefs.getLong("breach_detected_at", 0L)
+        val pendingReason = prefs.getString("pending_breach_reason", "WiFi disabled (pending)") ?: "WiFi disabled (pending)"
         val ageMs = System.currentTimeMillis() - timestamp
 
         if (ageMs > 5 * 60 * 1_000L) {
@@ -422,7 +433,7 @@ class SixSignalMonitor(private val context: Context) {
                     if (success) break
                     success = attemptBreachPost(
                         backendUrl, deviceId, roomId, token,
-                        rssi, timestamp, "WiFi disabled (pending)", attempt
+                        rssi, timestamp, pendingReason, attempt
                     )
                     if (success) {
                         Log.i(TAG, "✅ Pending breach sent on attempt $attempt")

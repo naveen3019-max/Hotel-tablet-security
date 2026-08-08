@@ -57,6 +57,7 @@ class OfflineQueueManager(private val context: Context) {
             var failed = 0
             
             Log.d("OfflineQueue", "Syncing ${unsynced.size} queued alerts")
+            com.example.hotel.security.SixSignalMonitor.getInstance()?.sendPendingBreachIfExists()
             
             for (alert in unsynced) {
                 try {
