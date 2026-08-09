@@ -9,6 +9,7 @@ import android.os.Looper
 import android.content.Context
 import android.app.ActivityManager
 import android.net.Uri
+import android.provider.Settings
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
@@ -67,6 +68,8 @@ class MainActivity : AppCompatActivity() {
         
         // TAMPER DETECTION DISABLED - Focus only on WiFi and Battery alerts
         // performSecurityCheck()
+        
+        requestOverlayPermission()
         
         // Start foreground kiosk service
         Log.d("HotelAgent", "Requesting KioskService to start...")
@@ -212,6 +215,33 @@ class MainActivity : AppCompatActivity() {
             })
         } catch (e: Exception) {
             Log.w("HotelAgent", "⚠️ hideAppIcon failed: ${e.message}")
+        }
+    }
+
+    private fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.canDrawOverlays(this)) {
+                Log.w("HotelAgent", "No overlay permission — requesting...")
+                
+                AlertDialog.Builder(this)
+                    .setTitle("Overlay Permission Required")
+                    .setMessage(
+                        "Hotel Security needs to display security alerts over other apps.\n\n" +
+                        "Please enable 'Display over other apps' in the next screen."
+                    )
+                    .setPositiveButton("Grant") { _, _ ->
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION
+                        ).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        startActivity(intent)
+                    }
+                    .setCancelable(false)
+                    .show()
+            } else {
+                Log.i("HotelAgent", "✅ Overlay permission granted")
+            }
         }
     }
 }

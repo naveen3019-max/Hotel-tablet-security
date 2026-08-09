@@ -911,10 +911,7 @@ class KioskService : Service() {
             // ← Mark stabilizer as complete so next reconnect re-arms correctly
             wifiTurnedOnAt = SystemClock.elapsedRealtime() - WIFI_STABILIZE_DELAY - 1_000L
             if (wrongNetworkActive) {
-                Log.i("KioskService", "✅ Authorized network restored")
-                wrongNetworkActive = false
-                hideBreachOverlay()
-                // Recovery heartbeat is sent in the heartbeat loop
+                onAuthorizedNetworkRestored()
             }
             NetworkStatus.CORRECT_NETWORK
         } else {
@@ -1019,8 +1016,12 @@ class KioskService : Service() {
         
         Log.e("KioskService", "🚨 $reason")
         
-        // Show orange screen locally
-        showBreachOverlay(reason)
+        // ← Show wrong network overlay
+        com.example.hotel.WrongNetworkOverlayService.show(
+            this,
+            wrongSsid = currentSsid,
+            authorizedSsid = authorizedSsid
+        )
         
         // Send breach to backend
         try {
@@ -1028,6 +1029,34 @@ class KioskService : Service() {
             monitor.triggerBreach(reason = reason, rssi = -127, isImmediate = true)
         } catch (e: Exception) {
             Log.e("KioskService", "Failed to trigger monitor breach: $e")
+        }
+    }
+
+    private fun onAuthorizedNetworkRestored() {
+        wrongNetworkActive = false
+        
+        // ← Hide wrong network overlay
+        com.example.hotel.WrongNetworkOverlayService.hide(this)
+        hideBreachOverlay() // still hide orange screen just in case
+        
+        Log.i("KioskService", "✅ Authorized network restored — overlay hidden")
+        
+        // ← Send recovery to backend
+        CoroutineScope(Dispatchers.IO).launch {
+            sendHeartbeatToBackend()
+        }
+    }
+
+    private fun getCurrentSsid(): String {
+        return try {
+            val identity = getCurrentNetworkIdentity()
+            if (identity.ssid.isNotEmpty() && identity.ssid != "<unknown ssid>") {
+                identity.ssid
+            } else {
+                "Unknown Network"
+            }
+        } catch (e: Exception) {
+            "Unknown Network"
         }
     }
 
