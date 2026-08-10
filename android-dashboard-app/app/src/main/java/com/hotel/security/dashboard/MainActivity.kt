@@ -156,6 +156,7 @@ class MainActivity : AppCompatActivity() {
                 
                 // Inject JS to bridge localStorage token to Android
                 injectTokenBridgeScript()
+                injectWebSocketBridge()
             }
             
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -204,6 +205,70 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
             })();
+        """.trimIndent()
+        
+        webView.evaluateJavascript(script, null)
+    }
+    
+    private fun injectWebSocketBridge() {
+        val script = """
+        (function() {
+            // ← Listen for WebSocket messages
+            // that indicate breach
+            var originalWebSocket = window.WebSocket;
+            window.WebSocket = function(url, protocols) {
+                var ws = protocols 
+                    ? new originalWebSocket(url, protocols)
+                    : new originalWebSocket(url);
+                
+                var originalOnMessage = null;
+                
+                Object.defineProperty(ws, 'onmessage', {
+                    set: function(handler) {
+                        originalOnMessage = handler;
+                        ws._onmessage = function(event) {
+                            // ← Check for breach
+                            try {
+                                var data = JSON.parse(
+                                    event.data);
+                                if (data.type === 'alert' &&
+                                    data.data &&
+                                    data.data.type === 'breach') {
+                                    // ← Immediately notify Android!
+                                    if (window.HotelSecurityBridge) {
+                                        window.HotelSecurityBridge
+                                            .onBreachDetected(
+                                            data.data.deviceId || '',
+                                            data.data.roomId || '',
+                                            data.data.message || 
+                                                'Breach detected',
+                                            data.data.rssi || -127
+                                        );
+                                    }
+                                }
+                            } catch(e) {}
+                            
+                            // ← Still call original handler
+                            if (handler) {
+                                handler.call(this, event);
+                            }
+                        };
+                        ws.addEventListener(
+                            'message', ws._onmessage);
+                    },
+                    get: function() {
+                        return originalOnMessage;
+                    }
+                });
+                
+                return ws;
+            };
+            window.WebSocket.prototype = 
+                originalWebSocket.prototype;
+            
+            console.log(
+                'WebSocket breach bridge injected');
+        })();
         """.trimIndent()
         
         webView.evaluateJavascript(script, null)

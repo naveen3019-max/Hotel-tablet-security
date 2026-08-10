@@ -23,12 +23,14 @@ import androidx.core.app.NotificationManagerCompat
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
+import android.app.AlarmManager
+import android.os.SystemClock
 
 class BreachPollingService : Service() {
 
     private val handler = Handler(
         Looper.getMainLooper())
-    private val POLL_INTERVAL = 30_000L
+    private val POLL_INTERVAL = 10_000L
     private val CHANNEL_ID = "breach_alerts"
     private val SERVICE_CHANNEL = 
         "service_channel"
@@ -36,6 +38,15 @@ class BreachPollingService : Service() {
     private val BACKEND_URL =
         "https://hotel-tablet-security" +
         ".onrender.com"
+        
+    private val wakeLock by lazy {
+        (getSystemService(
+            Context.POWER_SERVICE
+        ) as PowerManager).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "HotelDashboard::PollingWakeLock"
+        )
+    }
     
     // ← Persistent acknowledged IDs
     // Saved to SharedPrefs to survive restart
@@ -158,6 +169,55 @@ class BreachPollingService : Service() {
             1998,
             buildServiceNotification()
         )
+        
+        // ← Acquire partial wake lock
+        // Prevents CPU sleep during polling
+        if (!wakeLock.isHeld) {
+            wakeLock.acquire(
+                24 * 60 * 60 * 1000L) // 24 hours
+        }
+
+        // ← Handle instant breach from WebSocket
+        if (intent?.action == 
+            "SHOW_BREACH_NOTIFICATION") {
+            val deviceId = intent
+                .getStringExtra("deviceId") ?: ""
+            val roomId = intent
+                .getStringExtra("roomId") ?: ""
+            val message = intent
+                .getStringExtra("message") ?: 
+                "Breach detected"
+            val alertId = intent
+                .getStringExtra("alertId") ?: ""
+            
+            Log.i(TAG,
+                "⚡ Instant breach notification: " +
+                "$deviceId")
+            
+            // ← Check not already shown
+            val ackedIds = getAcknowledgedIds()
+            if (!ackedIds.contains(alertId)) {
+                handler.post {
+                    showBreachNotification(
+                        BreachAlert(
+                            alertId = alertId,
+                            deviceId = deviceId,
+                            roomId = roomId,
+                            message = message,
+                            type = "breach"
+                        )
+                    )
+                }
+            }
+            
+            // ← Also start normal polling
+            if (!isRunning) {
+                isRunning = true
+                handler.post(pollRunnable)
+            }
+            
+            return START_STICKY
+        }
         
         if (!isRunning) {
             isRunning = true
@@ -703,6 +763,30 @@ class BreachPollingService : Service() {
         isRunning = false
         handler.removeCallbacksAndMessages(null)
         instance = null
+        if (wakeLock.isHeld) {
+            wakeLock.release()
+        }
+        // ← Auto restart after 1 second
+        val restartIntent = Intent(
+            applicationContext,
+            BreachPollingService::class.java
+        )
+        val pendingIntent = PendingIntent
+            .getService(
+                applicationContext,
+                1,
+                restartIntent,
+                PendingIntent.FLAG_ONE_SHOT or
+                PendingIntent.FLAG_IMMUTABLE
+            )
+        val alarmManager = getSystemService(
+            Context.ALARM_SERVICE
+        ) as AlarmManager
+        alarmManager.set(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            SystemClock.elapsedRealtime() + 1000L,
+            pendingIntent
+        )
         super.onDestroy()
     }
 

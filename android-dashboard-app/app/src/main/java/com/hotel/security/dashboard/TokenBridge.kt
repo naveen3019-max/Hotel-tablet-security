@@ -80,4 +80,39 @@ class TokenBridge(
             Log.e("TokenBridge", "Error clearing all notifications/alarms: $e")
         }
     }
+
+    @JavascriptInterface
+    fun onBreachDetected(
+        deviceId: String,
+        roomId: String,
+        message: String,
+        rssi: Int
+    ) {
+        Log.i("Bridge",
+            "🚨 Breach from WebSocket: " +
+            "device=$deviceId room=$roomId")
+        
+        // ← Get polling service instance
+        // and show notification directly
+        val serviceIntent = Intent(
+            context,
+            BreachPollingService::class.java
+        ).apply {
+            action = "SHOW_BREACH_NOTIFICATION"
+            putExtra("deviceId", deviceId)
+            putExtra("roomId", roomId)
+            putExtra("message", message)
+            putExtra("alertId",
+                deviceId + System.currentTimeMillis())
+        }
+        
+        if (Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(serviceIntent)
+        } else {
+            context.startService(serviceIntent)
+        }
+        
+        Log.i("Bridge",
+            "✅ Instant breach notification sent!")
+    }
 }
