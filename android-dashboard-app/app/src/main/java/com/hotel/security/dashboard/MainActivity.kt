@@ -211,67 +211,72 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun injectWebSocketBridge() {
-        val script = """
-        (function() {
-            // ← Listen for WebSocket messages
-            // that indicate breach
-            var originalWebSocket = window.WebSocket;
-            window.WebSocket = function(url, protocols) {
-                var ws = protocols 
-                    ? new originalWebSocket(url, protocols)
-                    : new originalWebSocket(url);
+        // ← Wait 2 seconds for page to fully load
+        // then inject the bridge
+        webView.postDelayed({
+            val script = """
+            (function() {
+                if (window._hotelBridgeInjected) {
+                    return;
+                }
+                window._hotelBridgeInjected = true;
                 
-                var originalOnMessage = null;
+                // ← Method 1: Intercept fetch for
+                // WebSocket alternative
+                var _origFetch = window.fetch;
+                window.fetch = function() {
+                    return _origFetch.apply(
+                        this, arguments);
+                };
                 
-                Object.defineProperty(ws, 'onmessage', {
-                    set: function(handler) {
-                        originalOnMessage = handler;
-                        ws._onmessage = function(event) {
-                            // ← Check for breach
-                            try {
-                                var data = JSON.parse(
-                                    event.data);
-                                if (data.type === 'alert' &&
-                                    data.data &&
-                                    data.data.type === 'breach') {
-                                    // ← Immediately notify Android!
-                                    if (window.HotelSecurityBridge) {
-                                        window.HotelSecurityBridge
-                                            .onBreachDetected(
-                                            data.data.deviceId || '',
-                                            data.data.roomId || '',
-                                            data.data.message || 
-                                                'Breach detected',
-                                            data.data.rssi || -127
-                                        );
-                                    }
-                                }
-                            } catch(e) {}
-                            
-                            // ← Still call original handler
-                            if (handler) {
-                                handler.call(this, event);
-                            }
-                        };
-                        ws.addEventListener(
-                            'message', ws._onmessage);
-                    },
-                    get: function() {
-                        return originalOnMessage;
+                // ← Method 2: Monitor localStorage
+                // Dashboard updates localStorage
+                // when breach occurs
+                var lastBreachCheck = 
+                    localStorage.getItem(
+                        'last_breach_time') || '0';
+                
+                setInterval(function() {
+                    var currentBreach = 
+                        localStorage.getItem(
+                            'last_breach_time') || '0';
+                    if (currentBreach !== 
+                        lastBreachCheck) {
+                        lastBreachCheck = currentBreach;
+                        var deviceId = localStorage
+                            .getItem(
+                                'last_breach_device')
+                            || '';
+                        var roomId = localStorage
+                            .getItem(
+                                'last_breach_room')
+                            || '';
+                        var message = localStorage
+                            .getItem(
+                                'last_breach_message')
+                            || 'Breach detected';
+                        if (window.HotelSecurityBridge && 
+                            deviceId) {
+                            window.HotelSecurityBridge
+                                .onBreachDetected(
+                                deviceId,
+                                roomId,
+                                message,
+                                -127
+                            );
+                        }
                     }
-                });
+                }, 2000); // Check every 2 seconds
                 
-                return ws;
-            };
-            window.WebSocket.prototype = 
-                originalWebSocket.prototype;
+                console.log(
+                    'Hotel breach bridge ready');
+            })();
+            """.trimIndent()
             
-            console.log(
-                'WebSocket breach bridge injected');
-        })();
-        """.trimIndent()
-        
-        webView.evaluateJavascript(script, null)
+            webView.evaluateJavascript(script, null)
+            Log.i("MainActivity",
+                "✅ WebSocket bridge injected")
+        }, 2000L)
     }
     
     private fun pingBackend() {

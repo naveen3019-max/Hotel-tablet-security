@@ -633,6 +633,21 @@ export default function Dashboard() {
         (lastMessage.type === "alert" && d?.type === "breach") ||
         (lastMessage.type === "device_update" && d?.status === "breach")
       ) {
+        // ← Save to localStorage for
+        // Android bridge to detect
+        localStorage.setItem(
+            'last_breach_time',
+            Date.now().toString());
+        localStorage.setItem(
+            'last_breach_device',
+            (d?.deviceId || d?.device_id || (lastMessage as Record<string, unknown>).deviceId) as string || '');
+        localStorage.setItem(
+            'last_breach_room',
+            d?.roomId as string || '');
+        localStorage.setItem(
+            'last_breach_message',
+            d?.message as string || 'Breach detected');
+
         const breachDeviceId = d?.deviceId || d?.device_id || (lastMessage as Record<string, unknown>).deviceId;
         if (breachDeviceId) {
           setDevices((prev) => prev.map((dev) => dev.deviceId === breachDeviceId ? { ...dev, status: "breach" } : dev));

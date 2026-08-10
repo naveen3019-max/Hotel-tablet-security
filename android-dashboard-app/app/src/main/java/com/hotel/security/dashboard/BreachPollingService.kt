@@ -30,7 +30,7 @@ class BreachPollingService : Service() {
 
     private val handler = Handler(
         Looper.getMainLooper())
-    private val POLL_INTERVAL = 10_000L
+    private val POLL_INTERVAL = 30_000L
     private val CHANNEL_ID = "breach_alerts"
     private val SERVICE_CHANNEL = 
         "service_channel"
@@ -38,15 +38,6 @@ class BreachPollingService : Service() {
     private val BACKEND_URL =
         "https://hotel-tablet-security" +
         ".onrender.com"
-        
-    private val wakeLock by lazy {
-        (getSystemService(
-            Context.POWER_SERVICE
-        ) as PowerManager).newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "HotelDashboard::PollingWakeLock"
-        )
-    }
     
     // ← Persistent acknowledged IDs
     // Saved to SharedPrefs to survive restart
@@ -162,22 +153,11 @@ class BreachPollingService : Service() {
         flags: Int,
         startId: Int
     ): Int {
-        // ← MUST call startForeground
-        // within 5 seconds on Android 8+
-        // Do it IMMEDIATELY in onStartCommand
-        startForeground(
-            1998,
-            buildServiceNotification()
-        )
+        // ← MUST start foreground immediately
+        startForeground(1998,
+            buildServiceNotification())
         
-        // ← Acquire partial wake lock
-        // Prevents CPU sleep during polling
-        if (!wakeLock.isHeld) {
-            wakeLock.acquire(
-                24 * 60 * 60 * 1000L) // 24 hours
-        }
-
-        // ← Handle instant breach from WebSocket
+        // ← Handle instant breach notification
         if (intent?.action == 
             "SHOW_BREACH_NOTIFICATION") {
             val deviceId = intent
@@ -185,40 +165,34 @@ class BreachPollingService : Service() {
             val roomId = intent
                 .getStringExtra("roomId") ?: ""
             val message = intent
-                .getStringExtra("message") ?: 
+                .getStringExtra("message") ?:
                 "Breach detected"
             val alertId = intent
-                .getStringExtra("alertId") ?: ""
+                .getStringExtra("alertId") ?: 
+                deviceId + System.currentTimeMillis()
             
-            Log.i(TAG,
-                "⚡ Instant breach notification: " +
-                "$deviceId")
-            
-            // ← Check not already shown
-            val ackedIds = getAcknowledgedIds()
-            if (!ackedIds.contains(alertId)) {
-                handler.post {
-                    showBreachNotification(
-                        BreachAlert(
-                            alertId = alertId,
-                            deviceId = deviceId,
-                            roomId = roomId,
-                            message = message,
-                            type = "breach"
+            if (deviceId.isNotEmpty()) {
+                val ackedIds = getAcknowledgedIds()
+                if (!ackedIds.contains(alertId)) {
+                    handler.post {
+                        showBreachNotification(
+                            BreachAlert(
+                                alertId = alertId,
+                                deviceId = deviceId,
+                                roomId = roomId,
+                                message = message,
+                                type = "breach"
+                            )
                         )
-                    )
+                    }
+                    Log.i(TAG,
+                        "⚡ Instant notification: " +
+                        "$deviceId")
                 }
             }
-            
-            // ← Also start normal polling
-            if (!isRunning) {
-                isRunning = true
-                handler.post(pollRunnable)
-            }
-            
-            return START_STICKY
         }
         
+        // ← Always start polling if not running
         if (!isRunning) {
             isRunning = true
             handler.post(pollRunnable)
@@ -762,31 +736,49 @@ class BreachPollingService : Service() {
     override fun onDestroy() {
         isRunning = false
         handler.removeCallbacksAndMessages(null)
-        instance = null
-        if (wakeLock.isHeld) {
-            wakeLock.release()
-        }
-        // ← Auto restart after 1 second
-        val restartIntent = Intent(
-            applicationContext,
-            BreachPollingService::class.java
-        )
-        val pendingIntent = PendingIntent
-            .getService(
+        
+        // ← Simple restart via AlarmManager
+        // Does NOT need WakeLock
+        try {
+            val restartIntent = Intent(
                 applicationContext,
-                1,
-                restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or
-                PendingIntent.FLAG_IMMUTABLE
+                BreachPollingService::class.java
             )
-        val alarmManager = getSystemService(
-            Context.ALARM_SERVICE
-        ) as AlarmManager
-        alarmManager.set(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            SystemClock.elapsedRealtime() + 1000L,
-            pendingIntent
-        )
+            val pendingIntent = PendingIntent
+                .getForegroundService(
+                    applicationContext,
+                    1,
+                    restartIntent,
+                    PendingIntent.FLAG_ONE_SHOT or
+                    PendingIntent.FLAG_IMMUTABLE
+                )
+            val alarmManager = getSystemService(
+                Context.ALARM_SERVICE
+            ) as AlarmManager
+            
+            // ← Restart after 3 seconds
+            if (Build.VERSION.SDK_INT >= 
+                Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + 
+                        3000L,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.set(
+                    AlarmManager
+                        .ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() +
+                        3000L,
+                    pendingIntent
+                )
+            }
+            Log.i(TAG, "✅ Service restart scheduled")
+        } catch (e: Exception) {
+            Log.e(TAG, "Restart failed: $e")
+        }
+        
         super.onDestroy()
     }
 
