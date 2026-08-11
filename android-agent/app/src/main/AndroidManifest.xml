@@ -48,12 +48,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
+        android:name=".HotelApplication"
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Hotel Agent"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+        
+        <receiver android:name=".service.OfflineQueueFlushReceiver"
+                  android:enabled="true"
+                  android:exported="false" />
 
         <!-- Main activity WITHOUT launcher intent-filter.
              The alias below controls icon visibility — disabling the alias

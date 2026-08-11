@@ -148,8 +148,8 @@ class SixSignalMonitor(private val context: Context) {
         }
 
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        // ← FIX: Read deviceId dynamically from SharedPreferences at the moment it runs
-        val deviceId = prefs.getString("device_id", "") ?: ""
+        // ← FIX: Use DeviceIdentity to ensure it's available as early as possible
+        val deviceId = com.example.hotel.security.DeviceIdentity.deviceId ?: prefs.getString("device_id", "") ?: ""
         val roomId = prefs.getString("room_id", "") ?: ""
 
         // ← FIX: Decouple overlay from backend reporting entirely. Always show local overlay first!
@@ -189,7 +189,7 @@ class SixSignalMonitor(private val context: Context) {
         Log.d(TAG, "fireBreach() called with rssi=$rssi")
 
         val prefs = context.getSharedPreferences("hotel_prefs", Context.MODE_PRIVATE)
-        val deviceIdVal = prefs.getString("device_id", null) ?: run {
+        val deviceIdVal = com.example.hotel.security.DeviceIdentity.deviceId ?: prefs.getString("device_id", null) ?: run {
             Log.e(TAG, "fireBreach: deviceId is null — aborting")
             return
         }
@@ -375,7 +375,7 @@ class SixSignalMonitor(private val context: Context) {
             .putString("pending_breach_reason", reason)
             .apply()
         pendingBreachRssi = rssi
-        Log.i(TAG, "💾 Pending breach saved (rssi=$rssi ts=$breachTimestamp reason=$reason)")
+        Log.i(TAG, "💾 Pending breach saved (queued) timestamp: ${System.currentTimeMillis()}, rssi=$rssi ts=$breachTimestamp reason=$reason")
     }
 
     /**
@@ -411,7 +411,7 @@ class SixSignalMonitor(private val context: Context) {
                 Log.e(TAG, "sendPendingBreachIfExists: no token — cannot send")
                 return
             }
-        val deviceId = prefs.getString("device_id", "") ?: return
+        val deviceId = com.example.hotel.security.DeviceIdentity.deviceId ?: prefs.getString("device_id", "") ?: return
         val roomId = prefs.getString("room_id", "") ?: return
         val backendUrl = prefs.getString(
             "backend_base_url", "https://hotel-tablet-security.onrender.com"
@@ -436,7 +436,7 @@ class SixSignalMonitor(private val context: Context) {
                         rssi, timestamp, pendingReason, attempt
                     )
                     if (success) {
-                        Log.i(TAG, "✅ Pending breach sent on attempt $attempt")
+                        Log.i(TAG, "✅ backend POST success timestamp: ${System.currentTimeMillis()} for pending breach on attempt $attempt")
                         clearPendingBreach()
                     } else {
                         Thread.sleep(2_000L)

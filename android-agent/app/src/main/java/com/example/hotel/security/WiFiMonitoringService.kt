@@ -145,6 +145,7 @@ class WiFiMonitoringService : Service() {
         super.onCreate()
         ensureAuthorizedNetworkSaved()
         instance = this
+        com.example.hotel.security.DeviceIdentity.load(applicationContext)
 
         // ← DEBUG: Service-alive heartbeat — gaps in logcat reveal OEM kills
         Log.i(DBG, "═══ WiFiMonitoringService.onCreate() ═══ " +

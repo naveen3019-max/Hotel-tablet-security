@@ -20,7 +20,17 @@ class OfflineQueueManager(private val context: Context) {
     private val dao = database.queuedAlertDao()
     private val repository = AgentRepository.default(context)
     
-    /**
+    init {
+        // Start the fallback periodic flush timer
+        OfflineQueueFlushReceiver.scheduleNext(context)
+    }
+    
+    fun triggerImmediateFlush() {
+        Log.d("OfflineQueue", "triggerImmediateFlush called timestamp: ${System.currentTimeMillis()}")
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            syncQueuedAlerts()
+        }
+    }
      * Queue an alert for later sync
      */
     suspend fun queueAlert(
@@ -40,7 +50,7 @@ class OfflineQueueManager(private val context: Context) {
                 )
                 
                 dao.insert(alert)
-                Log.d("OfflineQueue", "Queued $type alert (offline)")
+                Log.d("OfflineQueue", "💾 Pending breach saved (queued) timestamp: ${System.currentTimeMillis()}, type: $type")
             } catch (e: Exception) {
                 Log.e("OfflineQueue", "Failed to queue alert", e)
             }
@@ -56,7 +66,7 @@ class OfflineQueueManager(private val context: Context) {
             var synced = 0
             var failed = 0
             
-            Log.d("OfflineQueue", "Syncing ${unsynced.size} queued alerts")
+            Log.d("OfflineQueue", "Syncing ${unsynced.size} queued alerts timestamp: ${System.currentTimeMillis()}")
             com.example.hotel.security.SixSignalMonitor.getInstance()?.sendPendingBreachIfExists()
             
             for (alert in unsynced) {
@@ -67,7 +77,7 @@ class OfflineQueueManager(private val context: Context) {
                     if (success) {
                         dao.markSynced(alert.id)
                         synced++
-                        Log.d("OfflineQueue", "Synced alert ${alert.id}")
+                        Log.d("OfflineQueue", "backend POST success timestamp: ${System.currentTimeMillis()} for alert ${alert.id}")
                     } else {
                         // Increment retry count
                         dao.updateRetryCount(alert.id, alert.retryCount + 1)
