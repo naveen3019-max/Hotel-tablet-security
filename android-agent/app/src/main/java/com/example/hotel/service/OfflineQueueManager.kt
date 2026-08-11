@@ -8,6 +8,7 @@ import com.example.hotel.data.AgentRepository
 import com.example.hotel.data.TamperRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
@@ -31,6 +32,8 @@ class OfflineQueueManager(private val context: Context) {
             syncQueuedAlerts()
         }
     }
+    
+    /**
      * Queue an alert for later sync
      */
     suspend fun queueAlert(
