@@ -71,9 +71,8 @@
             </intent-filter>
         </receiver>
 
-        <!-- Add PollingAlarmReceiver -->
         <receiver
-            android:name=".PollingAlarmReceiver"
+            android:name=".BreachAlarmReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>

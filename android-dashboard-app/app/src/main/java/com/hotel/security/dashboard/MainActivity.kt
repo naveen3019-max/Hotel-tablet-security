@@ -67,7 +67,12 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         handleNotificationIntent(intent)
         requestBatteryOptimizationExempt()
-        schedulePollingAlarm()
+        
+        // ← Start alarm-based backup polling
+        BreachAlarmReceiver.scheduleNextAlarm(this)
+        
+        // ← Start polling service
+        startPollingService()
     }
     
     private fun requestBatteryOptimizationExempt() {
@@ -90,31 +95,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun schedulePollingAlarm() {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        
-        val intent = Intent(this, PollingAlarmReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 5 * 60 * 1000L,
-                pendingIntent
-            )
-        } else {
-            alarmManager.setRepeating(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 5 * 60 * 1000L,
-                5 * 60 * 1000L,
-                pendingIntent
-            )
+    private fun startPollingService() {
+        val intent = Intent(this, BreachPollingService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Start service: $e")
         }
-        
-        Log.i("MainActivity", "✅ Polling alarm scheduled")
     }
     
     @SuppressLint("SetJavaScriptEnabled")
@@ -156,7 +147,7 @@ class MainActivity : AppCompatActivity() {
                 
                 // Inject JS to bridge localStorage token to Android
                 injectTokenBridgeScript()
-                injectWebSocketBridge()
+                injectBridgeWithRetry()
             }
             
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -208,6 +199,22 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()
         
         webView.evaluateJavascript(script, null)
+    }
+    
+    private fun injectBridgeWithRetry() {
+        // ← Try immediately
+        injectWebSocketBridge()
+        
+        // ← Retry after 3 seconds
+        // in case page not fully loaded
+        webView.postDelayed({
+            injectWebSocketBridge()
+        }, 3000L)
+        
+        // ← Retry after 8 seconds
+        webView.postDelayed({
+            injectWebSocketBridge()
+        }, 8000L)
     }
     
     private fun injectWebSocketBridge() {

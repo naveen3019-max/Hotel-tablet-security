@@ -736,50 +736,53 @@ class BreachPollingService : Service() {
     override fun onDestroy() {
         isRunning = false
         handler.removeCallbacksAndMessages(null)
+        instance = null
         
-        // ← Simple restart via AlarmManager
-        // Does NOT need WakeLock
+        // ← Schedule restart immediately
+        scheduleRestart()
+        
+        super.onDestroy()
+    }
+    
+    private fun scheduleRestart() {
         try {
-            val restartIntent = Intent(
+            val intent = Intent(
                 applicationContext,
                 BreachPollingService::class.java
             )
-            val pendingIntent = PendingIntent
-                .getForegroundService(
+            val pi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                PendingIntent.getForegroundService(
                     applicationContext,
-                    1,
-                    restartIntent,
-                    PendingIntent.FLAG_ONE_SHOT or
-                    PendingIntent.FLAG_IMMUTABLE
+                    1, intent,
+                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
                 )
-            val alarmManager = getSystemService(
-                Context.ALARM_SERVICE
-            ) as AlarmManager
+            } else {
+                PendingIntent.getService(
+                    applicationContext,
+                    1, intent,
+                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                )
+            }
             
-            // ← Restart after 3 seconds
-            if (Build.VERSION.SDK_INT >= 
-                Build.VERSION_CODES.M) {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + 
-                        3000L,
-                    pendingIntent
+                    SystemClock.elapsedRealtime() + 3000L,
+                    pi
                 )
             } else {
                 alarmManager.set(
-                    AlarmManager
-                        .ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() +
-                        3000L,
-                    pendingIntent
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + 3000L,
+                    pi
                 )
             }
             Log.i(TAG, "✅ Service restart scheduled")
         } catch (e: Exception) {
             Log.e(TAG, "Restart failed: $e")
         }
-        
-        super.onDestroy()
     }
 
     override fun onBind(
