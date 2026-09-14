@@ -167,24 +167,20 @@ def check_heartbeat_status_task():
 def cleanup_old_alerts_task(days: int = 90):
     """Periodic task to cleanup old alerts"""
     import asyncio
-    from db import Session, Alert
-    from sqlalchemy import select
+    from db import alerts_collection
     from datetime import datetime, timedelta, timezone
     
     async def cleanup():
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        async with Session() as s:
-            result = await s.execute(
-                select(Alert).where(Alert.ts < cutoff)
-            )
-            old_alerts = result.scalars().all()
-            
-            count = len(old_alerts)
-            for alert in old_alerts:
-                await s.delete(alert)
-            
-            await s.commit()
-            return count
+        cutoff_aware = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_naive = cutoff_aware.replace(tzinfo=None)
+        result = await alerts_collection.delete_many({
+            "$or": [
+                {"ts": {"$lt": cutoff_aware}},
+                {"ts": {"$lt": cutoff_naive}},
+                {"ts": {"$lt": cutoff_aware.isoformat()}}
+            ]
+        })
+        return result.deleted_count
     
     loop = asyncio.get_event_loop()
     if loop.is_running():
