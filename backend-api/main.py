@@ -319,9 +319,9 @@ async def monitor_device_heartbeats():
     """Background task to detect devices that stop sending heartbeats (WiFi OFF)"""
     logger.info("🔍 Starting heartbeat monitoring task for WiFi OFF detection")
     
-    # Heartbeat timeout: 30 seconds
-    # (devices send heartbeats every 10 seconds. 30s = 3 consecutive missed heartbeats)
-    OFFLINE_THRESHOLD_SECONDS = 30
+    # Heartbeat timeout: 45 seconds
+    # (absorbs real-world Wi-Fi jitter & single dropped packets; flags genuine loss in < 50s)
+    OFFLINE_THRESHOLD_SECONDS = 45
     
     # Dedup window: if a breach alert was already created within this many
     # seconds (from any source), skip creating another one.

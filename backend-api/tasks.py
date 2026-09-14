@@ -125,8 +125,8 @@ def check_heartbeat_status_task():
     from datetime import datetime, timedelta, timezone
     
     async def check():
-        # cutoff = 30 seconds ago (3 consecutive missed 10s heartbeats)
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=30)
+        # cutoff = 45 seconds ago (safe tolerance under 1 minute)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=45)
         
         # Find devices that are OK but haven't been seen recently
         cursor = devices_collection.find({

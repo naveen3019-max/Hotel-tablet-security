@@ -60,6 +60,7 @@ class KioskService : Service() {
     private fun startHeartbeatLoop() {
         heartbeatJob = serviceScope.launch {
             while (isActive) {
+                val cycleStart = SystemClock.elapsedRealtime()
                 try {
                     heartbeatWakeLock.acquire(35_000L)
                     try {
@@ -93,7 +94,9 @@ class KioskService : Service() {
                     if (heartbeatWakeLock.isHeld) heartbeatWakeLock.release()
                 }
                 
-                delay(10_000L)
+                val elapsed = SystemClock.elapsedRealtime() - cycleStart
+                val nextDelay = (10_000L - elapsed).coerceAtLeast(1_000L)
+                delay(nextDelay)
             }
         }
     }
