@@ -198,24 +198,73 @@ class MainActivity : AppCompatActivity() {
         // No longer enforce lock screen on stop
     }
 
-    // ← NEW: Keeps the icon hidden any time MainActivity runs on an already-
-    //   provisioned device (safety net — primary hide is in ProvisioningActivity).
+    // Safety-net icon hide: Samsung One UI aware.
+    // Primary hide happens in ProvisioningActivity; this runs every time
+    // MainActivity starts on an already-provisioned device.
     private fun hideAppIcon() {
+        val aliasComponent = ComponentName(packageName, "$packageName.MainActivityAlias")
+
+        // Step 1: Standard disable (works on Pixel / MIUI / Moto / OnePlus)
         try {
-            val aliasComponent = ComponentName(packageName, "$packageName.MainActivityAlias")
             packageManager.setComponentEnabledSetting(
                 aliasComponent,
                 PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                 PackageManager.DONT_KILL_APP
             )
-            
-            sendBroadcast(Intent("com.sec.android.app.launcher.REFRESH_SHORTCUT"))
-            sendBroadcast(Intent(Intent.ACTION_PACKAGE_CHANGED).apply {
-                data = Uri.parse("package:$packageName")
-            })
+            Log.i("HotelAgent", "✅ hideAppIcon: component disabled")
         } catch (e: Exception) {
-            Log.w("HotelAgent", "⚠️ hideAppIcon failed: ${e.message}")
+            Log.w("HotelAgent", "⚠️ hideAppIcon step 1 failed: ${e.message}")
         }
+
+        // Step 2: Samsung-specific flush of One UI launcher cache
+        if (Build.MANUFACTURER.lowercase().contains("samsung")) {
+            try {
+                // M1: force-disable with KILL_APP flag to invalidate Samsung cache
+                packageManager.setComponentEnabledSetting(
+                    aliasComponent,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    0
+                )
+            } catch (e: Exception) { Log.w("HotelAgent", "Samsung M1: $e") }
+
+            try {
+                // M2: Samsung-proprietary refresh broadcast
+                sendBroadcast(
+                    Intent("com.sec.android.app.launcher.REFRESH_SHORTCUT").apply {
+                        setPackage("com.sec.android.app.launcher")
+                    }
+                )
+            } catch (e: Exception) { Log.w("HotelAgent", "Samsung M2: $e") }
+
+            // M3: re-disable with DONT_KILL_APP after 500 ms
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    packageManager.setComponentEnabledSetting(
+                        ComponentName(packageName, "$packageName.MainActivityAlias"),
+                        PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                        PackageManager.DONT_KILL_APP
+                    )
+                    Log.d("HotelAgent", "Samsung M3: retry disable")
+                } catch (e: Exception) { Log.w("HotelAgent", "Samsung M3: $e") }
+            }, 500L)
+        }
+
+        // Step 3: Verify after 3 s, retry if still enabled
+        Handler(Looper.getMainLooper()).postDelayed({
+            val state = packageManager.getComponentEnabledSetting(aliasComponent)
+            if (state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
+                Log.w("HotelAgent", "⚠️ hideAppIcon: still ENABLED (state=$state), retrying")
+                try {
+                    packageManager.setComponentEnabledSetting(
+                        aliasComponent,
+                        PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                        PackageManager.DONT_KILL_APP
+                    )
+                } catch (e: Exception) { Log.e("HotelAgent", "Final retry: $e") }
+            } else {
+                Log.i("HotelAgent", "✅ hideAppIcon: icon confirmed hidden")
+            }
+        }, 3000L)
     }
 
     private fun requestOverlayPermission() {

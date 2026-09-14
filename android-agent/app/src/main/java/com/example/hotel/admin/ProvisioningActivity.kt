@@ -599,64 +599,234 @@ class ProvisioningActivity : AppCompatActivity() {
         Toast.makeText(this, "Please complete device registration", Toast.LENGTH_SHORT).show()
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // â† NEW: Stealth / icon-hiding helpers
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────
+    // Stealth / icon-hiding helpers  (Samsung One UI aware)
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Hides the app icon from the home screen launcher by DISABLING the
-     * activity-alias (.MainActivityAlias).  The alias is the only component
-     * that carries the LAUNCHER intent-filter; disabling it makes every
-     * launcher drop the shortcut within ~5 seconds without any UI prompt.
+     * Master icon-hide entry point called after successful registration.
      *
-     * WHY alias and not MainActivity directly?
-     *   If we disabled MainActivity the system would kill the whole task and
-     *   all bound services.  The alias is just a pointer â€” disabling it only
-     *   affects launcher discovery; services keep running unaffected.
+     * Step 1 – Standard disable: works on Pixel, MIUI, Motorola, OnePlus.
+     * Step 2 – Samsung-specific fix: One UI caches launcher shortcuts
+     *           independently of component state; we flush that cache with
+     *           6 complementary methods (see applySamsungIconHideFix).
+     * Step 3 – Verification after 3 s to confirm state and retry if needed.
      *
-     * DONT_KILL_APP flag ensures no process restart happens.
+     * Also enters lock-task mode if this app is the Device Owner.
      */
     private fun hideAppShortcut() {
-        hideAppIconStandard()
-        forceSamsungLauncherRefresh()
-        
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+        try {
+            val componentName = ComponentName(
+                this,
+                "${packageName}.MainActivityAlias"
+            )
+
+            // ← Step 1: Standard disable — works on all non-Samsung devices
+            packageManager.setComponentEnabledSetting(
+                componentName,
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            Log.i("HideIcon", "✅ Component disabled")
+
+            // ← Step 2: Samsung-specific fixes
+            if (isSamsung()) {
+                Log.i("HideIcon", "Samsung detected — applying Samsung fix")
+                applySamsungIconHideFix(componentName)
+            }
+
+            // ← Step 3: Verify after 3 seconds
+            Handler(Looper.getMainLooper()).postDelayed({
+                verifyIconHidden(componentName)
+            }, 3000L)
+
+        } catch (e: Exception) {
+            Log.e("HideIcon", "Hide failed: ${e.message}")
+        }
+
+        // Lock-task / kiosk mode (Device Owner only)
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
+            as android.app.admin.DevicePolicyManager
         val adminComponent = ComponentName(this, HotelDeviceAdminReceiver::class.java)
         if (dpm.isDeviceOwnerApp(packageName)) {
             dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
             startLockTask()
         }
-        
-        Log.d("Kiosk", "Icon hidden. KioskService running: ${isServiceRunning(com.example.hotel.service.KioskService::class.java)}")
+
+        Log.d("Kiosk", "Icon hidden. KioskService running: "
+            + "${isServiceRunning(com.example.hotel.service.KioskService::class.java)}")
+    }
+
+    /** Returns true when running on a Samsung device (any One UI version). */
+    private fun isSamsung(): Boolean =
+        Build.MANUFACTURER.lowercase().contains("samsung")
+
+    /**
+     * Six complementary methods to force Samsung One UI Home to drop its
+     * cached launcher shortcut for this package.
+     *
+     * Samsung's launcher caches shortcuts separately from Android's
+     * PackageManager component state, so the standard
+     * setComponentEnabledSetting() call alone is insufficient on One UI.
+     */
+    private fun applySamsungIconHideFix(componentName: ComponentName) {
+
+        // ── Method 1 ──────────────────────────────────────────────────────────
+        // Disable with flags=0 (KILL_APP) to force Samsung launcher to
+        // invalidate its cache. We immediately follow up with DONT_KILL_APP
+        // retries (M4 & M5) to ensure services survive.
+        try {
+            packageManager.setComponentEnabledSetting(
+                componentName,
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                0  // 0 = KILL_APP → forces launcher refresh
+            )
+            Log.d("HideIcon", "Samsung M1: disabled with 0 flags")
+        } catch (e: Exception) {
+            Log.w("HideIcon", "Samsung M1: $e")
+        }
+
+        // ── Method 2 ──────────────────────────────────────────────────────────
+        // Samsung-proprietary broadcast: asks One UI Home to refresh shortcuts.
+        try {
+            val launcherIntent = Intent(
+                "com.sec.android.app.launcher.REFRESH_SHORTCUT"
+            ).apply {
+                setPackage("com.sec.android.app.launcher")
+            }
+            sendBroadcast(launcherIntent)
+            Log.d("HideIcon", "Samsung M2: refresh broadcast sent")
+        } catch (e: Exception) {
+            Log.w("HideIcon", "Samsung M2: $e")
+        }
+
+        // ── Method 3 ──────────────────────────────────────────────────────────
+        // Synthesise PACKAGE_CHANGED so the launcher re-queries component state.
+        // NOTE: ACTION_PACKAGE_CHANGED is a protected broadcast on API 26+;
+        // the send may be silently dropped on hardened ROMs, which is fine —
+        // the other methods will still take effect.
+        try {
+            val intent = Intent(
+                "android.intent.action.PACKAGE_CHANGED"
+            ).apply {
+                data = Uri.parse("package:$packageName")
+                putExtra("android.intent.extra.PACKAGE_NAME", packageName)
+                putExtra(
+                    "android.intent.extra.CHANGED_COMPONENT_NAME_LIST",
+                    arrayOf("${packageName}.MainActivityAlias")
+                )
+                putExtra("android.intent.extra.DONT_KILL_APP", true)
+            }
+            sendBroadcast(intent)
+            Log.d("HideIcon", "Samsung M3: package changed broadcast")
+        } catch (e: Exception) {
+            Log.w("HideIcon", "Samsung M3: $e")
+        }
+
+        // ── Method 4 ──────────────────────────────────────────────────────────
+        // First retry disable after 500 ms — Samsung launcher needs a moment
+        // to process the above broadcasts before re-reading component state.
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                packageManager.setComponentEnabledSetting(
+                    ComponentName(this, "${packageName}.MainActivityAlias"),
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.d("HideIcon", "Samsung M4: retry disable")
+            } catch (e: Exception) {
+                Log.w("HideIcon", "Samsung M4: $e")
+            }
+        }, 500L)
+
+        // ── Method 5 ──────────────────────────────────────────────────────────
+        // Second retry after 2 s + disable dynamic shortcuts so One UI Home
+        // removes any pinned shortcut badges for this app.
+        Handler(Looper.getMainLooper()).postDelayed({
+            // 2nd disable retry
+            try {
+                packageManager.setComponentEnabledSetting(
+                    ComponentName(this, "${packageName}.MainActivityAlias"),
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.d("HideIcon", "Samsung M5: 2nd retry")
+            } catch (e: Exception) {
+                Log.w("HideIcon", "Samsung M5: $e")
+            }
+
+            // Disable dynamic shortcuts → Samsung launcher removes icon badges
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+                    val shortcutManager = getSystemService(
+                        android.content.pm.ShortcutManager::class.java
+                    )
+                    shortcutManager?.disableShortcuts(
+                        listOf("main_shortcut"),
+                        "App is running in background mode"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w("HideIcon", "Samsung shortcut: $e")
+            }
+        }, 2000L)
+
+        // ── Method 6 ──────────────────────────────────────────────────────────
+        // After 3 s, notify all known Samsung launcher packages with a generic
+        // ACTION_PACKAGE_CHANGED so they re-read component state one final time.
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                val launcherPackages = listOf(
+                    "com.sec.android.app.launcher",
+                    "com.samsung.android.app.spage"
+                )
+                for (pkg in launcherPackages) {
+                    try {
+                        val notifyIntent = Intent(
+                            Intent.ACTION_PACKAGE_CHANGED
+                        ).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        sendBroadcast(notifyIntent)
+                    } catch (ignored: Exception) { /* best-effort */ }
+                }
+                Log.d("HideIcon", "Samsung M6: launcher notified")
+            } catch (e: Exception) {
+                Log.w("HideIcon", "Samsung M6: $e")
+            }
+        }, 3000L)
+    }
+
+    /**
+     * Called 3 seconds after the initial disable to confirm the component
+     * state is DISABLED.  If not, performs one final retry.
+     */
+    private fun verifyIconHidden(componentName: ComponentName) {
+        val state = packageManager.getComponentEnabledSetting(componentName)
+        Log.i("HideIcon",
+            "Component state: $state (2=DISABLED ✅, 1=ENABLED ❌)")
+
+        if (state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
+            Log.e("HideIcon",
+                "❌ Icon still showing! State=$state — retrying...")
+            try {
+                packageManager.setComponentEnabledSetting(
+                    componentName,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+            } catch (e: Exception) {
+                Log.e("HideIcon", "Final retry: $e")
+            }
+        } else {
+            Log.i("HideIcon", "✅ Icon successfully hidden!")
+        }
     }
 
     private fun isServiceRunning(serviceClass: Class<*>): Boolean {
         val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
         return manager.getRunningServices(Int.MAX_VALUE)
             .any { it.service.className == serviceClass.name }
-    }
-
-    private fun hideAppIconStandard() {
-        val aliasComponent = ComponentName(packageName, "$packageName.MainActivityAlias")
-        packageManager.setComponentEnabledSetting(
-            aliasComponent,
-            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-            PackageManager.DONT_KILL_APP
-        )
-    }
-
-    private fun forceSamsungLauncherRefresh() {
-        // ← FIX 4: Only attempt this on Samsung devices
-        if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
-            try {
-                // ← FIX 1: Removed illegal ACTION_PACKAGE_CHANGED broadcast.
-                // It's a protected system broadcast and causes SecurityException.
-                // Using the specific Samsung launcher refresh broadcast only.
-                sendBroadcast(Intent("com.sec.android.app.launcher.REFRESH_SHORTCUT"))
-            } catch (e: Exception) {
-                Log.w("Provisioning", "Samsung launcher refresh failed", e)
-            }
-        }
     }
 
     /**

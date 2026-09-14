@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -20,12 +20,13 @@ class AuthService:
         """Create JWT access token"""
         to_encode = data.copy()
         
+        now = datetime.now(timezone.utc)
         if expires_delta:
-            expire = datetime.utcnow() + expires_delta
+            expire = now + expires_delta
         else:
-            expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expiration_minutes)
+            expire = now + timedelta(minutes=settings.jwt_expiration_minutes)
         
-        to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+        to_encode.update({"exp": expire, "iat": now})
         
         encoded_jwt = jwt.encode(
             to_encode,
@@ -62,7 +63,7 @@ class AuthService:
         )
     
     @staticmethod
-    def create_user_token(user_id: str, role: str, hotel_id: str = None, hotel_name: str = None) -> str:
+    def create_user_token(user_id: str, role: str, hotel_id: Optional[str] = None, hotel_name: Optional[str] = None) -> str:
         """Create user JWT token"""
         return AuthService.create_access_token(
             data={

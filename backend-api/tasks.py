@@ -122,11 +122,11 @@ def check_heartbeat_status_task():
     """Check for stale heartbeats and mark devices as compromised"""
     import asyncio
     from db import devices_collection, StatusEnum
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     
     async def check():
-        # cutoff = 40 seconds ago (grace period over 30s heartbeat)
-        cutoff = datetime.utcnow() - timedelta(seconds=40)
+        # cutoff = 30 seconds ago (3 consecutive missed 10s heartbeats)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=30)
         
         # Find devices that are OK but haven't been seen recently
         cursor = devices_collection.find({
@@ -202,9 +202,9 @@ celery_app.conf.beat_schedule = {
         "schedule": 604800.0,  # 7 days in seconds
         "args": (90,)  # Keep 90 days of alerts
     },
-    "check-heartbeat-status-30s": {
+    "check-heartbeat-status-15s": {
         "task": "check_heartbeat_status",
-        "schedule": 30.0,
+        "schedule": 15.0,
         "args": ()
     }
 }
