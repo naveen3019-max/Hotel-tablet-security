@@ -317,15 +317,14 @@ keepalive_task = None
 
 async def monitor_device_heartbeats():
     """Background task to detect devices that stop sending heartbeats (WiFi OFF)"""
-    logger.info("🔍 Starting heartbeat monitoring task for WiFi OFF detection")
+    logger.info("🔍 Starting heartbeat monitoring task for WiFi OFF and Uninstall detection")
     
-    # Heartbeat timeout: 45 seconds
-    # (absorbs real-world Wi-Fi jitter & single dropped packets; flags genuine loss in < 50s)
-    OFFLINE_THRESHOLD_SECONDS = 45
+    # Heartbeat timeout: 30 seconds
+    # (flags genuine heartbeat loss from WiFi-off or app uninstall in < 35s)
+    OFFLINE_THRESHOLD_SECONDS = 30
     
-    # Dedup window: if a breach alert was already created within this many
-    # seconds (from any source), skip creating another one.
-    BREACH_DEDUP_SECONDS = 300  # 5 minutes
+    # Dedup window for heartbeat_timeout alerts: 30 seconds
+    BREACH_DEDUP_SECONDS = 30
     
     while True:
         try:
@@ -352,32 +351,29 @@ async def monitor_device_heartbeats():
                 last_seen = device.get("last_seen")
                 
                 # ── DEDUP GUARD 1: Skip if device is already in breach status.
-                # Android already sent the breach POST directly.
-                # Creating another one here would be a duplicate.
+                # Android already sent the breach POST directly or backend marked it.
                 if current_status == StatusEnum.breach:
                     logger.info(
                         f"Device {device_id} already in breach status — "
-                        f"skipping heartbeat timeout breach "
-                        f"(Android already reported it directly)"
+                        f"skipping heartbeat timeout breach"
                     )
                     continue
 
                 if current_status in [StatusEnum.ok, StatusEnum.offline]:
-                    # ── DEDUP GUARD 2: Check if a breach alert was already
-                    # created within the last 5 minutes for this device.
-                    # This catches the race where Android's direct POST
-                    # succeeded and set status=breach, but the cursor had
-                    # already loaded this device before the status update.
+                    # ── DEDUP GUARD 2: Check if a heartbeat_timeout breach alert was already
+                    # created within the last 30 seconds for this device.
+                    # This prevents duplicate timeout alerts if cursor loaded before DB write.
                     import datetime as dt
                     recent_cutoff = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(seconds=BREACH_DEDUP_SECONDS)
                     recent_breach = await alerts_collection.find_one({
                         "deviceId": device_id,
                         "type": "breach",
+                        "source": "heartbeat_timeout",
                         "ts": {"$gte": recent_cutoff}
                     })
                     if recent_breach:
                         logger.info(
-                            f"Recent breach already exists for {device_id} "
+                            f"Recent heartbeat timeout breach already exists for {device_id} "
                             f"(within {BREACH_DEDUP_SECONDS}s) — "
                             f"skipping heartbeat timeout duplicate"
                         )
