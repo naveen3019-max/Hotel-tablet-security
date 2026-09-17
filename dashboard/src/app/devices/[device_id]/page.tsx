@@ -189,20 +189,58 @@ export default function DeviceDetailPage() {
   const statusColor = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
   const statusLabel = isBreach ? "BREACH DETECTED" : isOffline ? "OFFLINE" : "HEALTHY & SECURE";
 
-  // Data correctness fix for live stats when offline
+  // Status-aware label & value logic for Signal (RSSI)
+  const rssiLabel = isOffline
+    ? "Last Known Signal"
+    : isBreach
+    ? "Current Signal (Below Threshold)"
+    : "Live RSSI Signal Strength";
+
   const signalDisplay = isOffline
-    ? "Signal unavailable — device offline"
+    ? identity?.rssi !== undefined && identity?.rssi !== null && identity.rssi !== -127
+      ? `Last Known: ${identity.rssi} dBm`
+      : "Signal unavailable — device offline"
     : identity?.rssi !== undefined && identity?.rssi !== null
     ? identity.rssi === -127
       ? "No signal"
+      : isBreach
+      ? `${identity.rssi} dBm (Breach)`
       : `${identity.rssi} dBm`
     : "Signal unavailable";
 
+  // Status-aware label & value logic for Battery
+  const batteryLabel = isOffline
+    ? "Last Known Battery"
+    : isBreach
+    ? "Battery Level at Breach"
+    : "Live Battery Status";
+
   const batteryDisplay = isOffline
-    ? "Battery unavailable — device offline"
+    ? identity?.battery !== undefined && identity?.battery !== null
+      ? `Last Known: ${identity.battery}%`
+      : "Battery unavailable — device offline"
     : identity?.battery !== undefined && identity?.battery !== null
     ? `${identity.battery}%`
     : "Battery unavailable";
+
+  // Status-aware Chart 1 Title & Tag
+  const chart1Title = isOffline
+    ? "Historical RSSI Signal Strength Trend"
+    : isBreach
+    ? "RSSI Signal Strength Trend (Breach State)"
+    : "Live RSSI Signal Strength Trend";
+
+  const chart1Tag = isOffline
+    ? "Historical"
+    : isBreach
+    ? "Breach State"
+    : "Live Telemetry";
+
+  const chart1Sub = isOffline
+    ? "Last recorded signal telemetry before device went offline"
+    : isBreach
+    ? "Signal telemetry recorded during active breach state"
+    : "Monitor real-time signal strength and pre-breach degradation";
 
   // Icon Helper renderers
   const renderBatteryIcon = () => {
@@ -507,7 +545,7 @@ export default function DeviceDetailPage() {
             {/* Battery Level */}
             <div>
               <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "6px" }}>
-                Live Battery Status
+                {batteryLabel}
               </div>
               <div
                 style={{
@@ -527,13 +565,13 @@ export default function DeviceDetailPage() {
             {/* Signal Strength */}
             <div>
               <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "6px" }}>
-                Live RSSI Signal Strength
+                {rssiLabel}
               </div>
               <div
                 style={{
                   fontSize: isOffline ? "14px" : "20px",
                   fontWeight: 700,
-                  color: isOffline ? "#f59e0b" : "#3b82f6",
+                  color: isOffline ? "#f59e0b" : isBreach ? "#ef4444" : "#3b82f6",
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
@@ -772,14 +810,23 @@ export default function DeviceDetailPage() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
               <div>
                 <h3 style={{ fontSize: "16px", fontWeight: 800, color: "#ffffff", margin: 0 }}>
-                  RSSI Signal Strength Trend
+                  {chart1Title}
                 </h3>
                 <p style={{ fontSize: "12px", color: "#94a3b8", margin: "4px 0 0 0" }}>
-                  Monitor signal degradation before disconnections
+                  {chart1Sub}
                 </p>
               </div>
-              <span style={{ fontSize: "11px", fontWeight: 700, padding: "4px 8px", borderRadius: "6px", backgroundColor: "rgba(59, 130, 246, 0.15)", color: "#60a5fa" }}>
-                Telemetry
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  padding: "4px 8px",
+                  borderRadius: "6px",
+                  backgroundColor: isOffline ? "rgba(245, 158, 11, 0.15)" : isBreach ? "rgba(239, 68, 68, 0.15)" : "rgba(59, 130, 246, 0.15)",
+                  color: isOffline ? "#f59e0b" : isBreach ? "#f87171" : "#60a5fa",
+                }}
+              >
+                {chart1Tag}
               </span>
             </div>
 
