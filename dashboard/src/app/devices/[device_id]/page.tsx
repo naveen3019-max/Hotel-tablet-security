@@ -3,6 +3,28 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  User,
+  BatteryFull,
+  BatteryMedium,
+  BatteryLow,
+  BatteryWarning,
+  Wifi,
+  WifiOff,
+  SignalHigh,
+  SignalMedium,
+  SignalLow,
+  ShieldCheck,
+  ShieldAlert,
+  AlertTriangle,
+  ArrowLeft,
+  Download,
+  Clock,
+  Calendar,
+  Activity,
+  FileText,
+} from "lucide-react";
+
 import RssiLineChart, { RssiDataPoint } from "@/components/RssiLineChart";
 import BreachHourBarChart from "@/components/BreachHourBarChart";
 
@@ -186,6 +208,32 @@ export default function DeviceDetailPage() {
     ? `${identity.battery}%`
     : "Battery unavailable";
 
+  // Icon Helper renderers
+  const renderBatteryIcon = () => {
+    if (isOffline || identity?.battery === undefined || identity?.battery === null) {
+      return <BatteryWarning size={20} color="#f59e0b" />;
+    }
+    const b = identity.battery;
+    if (b <= 20) return <BatteryLow size={20} color="#ef4444" />;
+    if (b <= 50) return <BatteryMedium size={20} color="#f59e0b" />;
+    return <BatteryFull size={20} color="#22c55e" />;
+  };
+
+  const renderSignalIcon = () => {
+    if (isOffline) return <WifiOff size={20} color="#f59e0b" />;
+    const r = identity?.rssi;
+    if (r === undefined || r === null || r === -127) return <WifiOff size={20} color="#64748b" />;
+    if (r >= -60) return <SignalHigh size={20} color="#22c55e" />;
+    if (r >= -75) return <SignalMedium size={20} color="#3b82f6" />;
+    return <SignalLow size={20} color="#ef4444" />;
+  };
+
+  const renderSecurityIcon = () => {
+    if (isBreach) return <ShieldAlert size={20} color="#ef4444" />;
+    if (isOffline) return <AlertTriangle size={20} color="#f59e0b" />;
+    return <ShieldCheck size={20} color="#22c55e" />;
+  };
+
   // Sort events
   const breachList = useMemo(() => {
     return [...(history?.breach_events || [])].sort((a, b) => {
@@ -207,7 +255,6 @@ export default function DeviceDetailPage() {
   const rssiChartData = useMemo<RssiDataPoint[]>(() => {
     const points: RssiDataPoint[] = [];
 
-    // Extract rssi values from breaches
     if (history?.breach_events) {
       history.breach_events.forEach((b) => {
         if (b.rssi_at_breach !== null && b.rssi_at_breach !== undefined && b.timestamp) {
@@ -219,7 +266,6 @@ export default function DeviceDetailPage() {
       });
     }
 
-    // Add current live reading if active
     if (!isOffline && identity?.rssi !== undefined && identity?.rssi !== null && identity.rssi !== -127) {
       points.push({
         timestamp: new Date().toISOString(),
@@ -228,10 +274,8 @@ export default function DeviceDetailPage() {
       });
     }
 
-    // Sort by timestamp
     points.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-    // Fallback sample data points if history is sparse to give staff a clear visualization
     if (points.length < 3 && identity?.rssi) {
       const baseRssi = identity.rssi;
       const nowTs = Date.now();
@@ -265,7 +309,7 @@ export default function DeviceDetailPage() {
               marginBottom: "24px",
             }}
           >
-            ← Back to Devices
+            <ArrowLeft size={16} /> Back to Devices
           </Link>
           <div
             style={{
@@ -334,10 +378,7 @@ export default function DeviceDetailPage() {
                 transition: "all 0.2s ease",
               }}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <line x1="19" y1="12" x2="5" y2="12" />
-                <polyline points="12 19 5 12 12 5" />
-              </svg>
+              <ArrowLeft size={16} />
               Back to Devices
             </Link>
             <div>
@@ -370,11 +411,7 @@ export default function DeviceDetailPage() {
               minHeight: "44px",
             }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
+            <Download size={16} />
             {downloadingPdf ? "Generating PDF..." : "Download PDF Report"}
           </button>
         </header>
@@ -452,13 +489,14 @@ export default function DeviceDetailPage() {
               }}
             >
               <div style={{ fontSize: "12px", color: "#64748b" }}>Assigned Staff</div>
-              <div style={{ fontSize: "16px", fontWeight: 700, color: "#f1f5f9" }}>
-                👤 {identity?.assigned_by || "Unassigned"}
+              <div style={{ fontSize: "16px", fontWeight: 700, color: "#f1f5f9", display: "flex", alignItems: "center", gap: "6px" }}>
+                <User size={16} color="#60a5fa" />
+                {identity?.assigned_by || "Unassigned"}
               </div>
             </div>
           </div>
 
-          {/* Quick Metrics Bar with Stale Data Protection */}
+          {/* Quick Metrics Bar */}
           <div
             style={{
               display: "grid",
@@ -472,7 +510,7 @@ export default function DeviceDetailPage() {
           >
             {/* Battery Level */}
             <div>
-              <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}>
+              <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "6px" }}>
                 Live Battery Status
               </div>
               <div
@@ -482,20 +520,17 @@ export default function DeviceDetailPage() {
                   color: isOffline ? "#f59e0b" : "#22c55e",
                   display: "flex",
                   alignItems: "center",
-                  gap: "6px",
+                  gap: "8px",
                 }}
               >
-                {isOffline ? (
-                  <span>⚠️ {batteryDisplay}</span>
-                ) : (
-                  <span>🔋 {batteryDisplay}</span>
-                )}
+                {renderBatteryIcon()}
+                <span>{batteryDisplay}</span>
               </div>
             </div>
 
             {/* Signal Strength */}
             <div>
-              <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}>
+              <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "6px" }}>
                 Live RSSI Signal Strength
               </div>
               <div
@@ -505,24 +540,22 @@ export default function DeviceDetailPage() {
                   color: isOffline ? "#f59e0b" : "#3b82f6",
                   display: "flex",
                   alignItems: "center",
-                  gap: "6px",
+                  gap: "8px",
                 }}
               >
-                {isOffline ? (
-                  <span>📶 {signalDisplay}</span>
-                ) : (
-                  <span>📶 {signalDisplay}</span>
-                )}
+                {renderSignalIcon()}
+                <span>{signalDisplay}</span>
               </div>
             </div>
 
-            {/* Overall Health */}
+            {/* Security Perimeter Status */}
             <div>
-              <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}>
+              <div style={{ fontSize: "12px", color: "#94a3b8", fontWeight: 600, marginBottom: "6px" }}>
                 Security Perimeter
               </div>
-              <div style={{ fontSize: "16px", fontWeight: 700, color: statusColor }}>
-                {isBreach ? "🚨 Breach Alert Triggered" : isOffline ? "⚠️ Disconnected" : "🛡️ Fully Protected"}
+              <div style={{ fontSize: "16px", fontWeight: 700, color: statusColor, display: "flex", alignItems: "center", gap: "8px" }}>
+                {renderSecurityIcon()}
+                <span>{isBreach ? "Breach Alert Triggered" : isOffline ? "Disconnected" : "Fully Protected"}</span>
               </div>
             </div>
           </div>
@@ -544,7 +577,8 @@ export default function DeviceDetailPage() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-            <span style={{ fontSize: "14px", fontWeight: 600, color: "#94a3b8", marginRight: "8px" }}>
+            <span style={{ fontSize: "14px", fontWeight: 600, color: "#94a3b8", marginRight: "8px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+              <Calendar size={15} />
               Filter Period:
             </span>
             {(["7d", "30d", "90d", "custom"] as const).map((p) => (
@@ -973,9 +1007,13 @@ export default function DeviceDetailPage() {
                             fontWeight: 700,
                             backgroundColor: "rgba(245, 158, 11, 0.15)",
                             color: "#fbbf24",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
                           }}
                         >
-                          ⚠️ {e.battery_percent}%
+                          <BatteryWarning size={14} color="#fbbf24" />
+                          {e.battery_percent}%
                         </span>
                       </td>
                     </tr>

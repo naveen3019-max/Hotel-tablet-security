@@ -433,7 +433,6 @@ function DeviceCard({
           </div>
           <div style={{ fontSize: 13, fontWeight: 700, color: battColor }}>
             {batteryDisplayText}
-            {!isOffline && d.battery !== undefined && d.battery !== null && d.battery < 20 && " ⚠️"}
           </div>
           <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>Battery</div>
         </div>
@@ -499,7 +498,7 @@ function AlertItem({
 
   const accent = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#3b82f6";
   const glow   = isBreach ? "rgba(239,68,68,0.08)" : isOffline ? "rgba(245,158,11,0.08)" : "rgba(59,130,246,0.08)";
-  const label  = isBreach ? "🚨 BREACH DETECTED" : isOffline ? "DEVICE OFFLINE" : "ALERT";
+  const label  = isBreach ? "BREACH DETECTED" : isOffline ? "DEVICE OFFLINE" : "ALERT";
 
   return (
     <div
@@ -700,7 +699,7 @@ export default function Dashboard() {
         if (breachDeviceId) {
           addToast(breachDeviceId as string, d?.roomId as string | undefined, d?.message as string | undefined);
           if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
-            const notif = new Notification("🚨 SECURITY BREACH DETECTED", {
+            const notif = new Notification("SECURITY BREACH DETECTED", {
               body: `Device ${breachDeviceId} ${d?.roomId ? `(Room ${d.roomId})` : ""} - ${d?.message || "Immediate attention required"}`,
             });
             notif.onclick = () => { window.focus(); notif.close(); };
@@ -733,7 +732,7 @@ export default function Dashboard() {
         if (battDeviceId) {
           addToast(battDeviceId as string, d?.roomId as string | undefined, `Battery is at ${d?.level}%`);
           if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
-            const notif = new Notification("🔋 LOW BATTERY ALERT", {
+            const notif = new Notification("LOW BATTERY ALERT", {
               body: `Device ${battDeviceId} ${d?.roomId ? `(Room ${d.roomId})` : ""} is at ${d?.level}% battery.`,
             });
             notif.onclick = () => { window.focus(); notif.close(); };
@@ -965,7 +964,7 @@ export default function Dashboard() {
               boxShadow: "0 8px 32px rgba(239,68,68,0.3)",
             }}
           >
-            <span style={{ fontSize: 20 }}>🚨</span>
+            <AlertTriangleIcon color="#ef4444" size={20} />
             <div style={{ flex: 1 }}>
               <p style={{ fontWeight: 700, fontSize: 13, color: "#fff", margin: 0 }}>BREACH DETECTED</p>
               <p style={{ fontSize: 12, color: "rgba(255,255,255,0.8)", margin: "2px 0 0" }}>
@@ -1071,8 +1070,9 @@ export default function Dashboard() {
 
         {/* Loading */}
         {isLoading && devices.length === 0 && (
-          <div style={{ background: "#141b2d", border: "1px solid #1e2a45", borderRadius: 12, padding: 16, marginBottom: 20, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>
-            🔄 Loading dashboard data…
+          <div style={{ background: "#141b2d", border: "1px solid #1e2a45", borderRadius: 12, padding: 16, marginBottom: 20, textAlign: "center", color: "#94a3b8", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <span style={{ display: "inline-block", width: 14, height: 14, border: "2px solid #3b82f6", borderTopColor: "transparent", borderRadius: "50%" }} className="animate-spin" />
+            Loading dashboard data...
           </div>
         )}
 
@@ -1133,7 +1133,10 @@ export default function Dashboard() {
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <span className="animate-dot-fast" style={{ width: 10, height: 10, borderRadius: "50%", background: "#ef4444", display: "inline-block", flexShrink: 0 }} />
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#ef4444", letterSpacing: "1px" }}>🚨 SECURITY ALERT</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#ef4444", letterSpacing: "1px", display: "flex", alignItems: "center", gap: 6 }}>
+                  <AlertTriangleIcon color="#ef4444" size={16} />
+                  SECURITY ALERT
+                </div>
                 <div style={{ fontSize: 13, color: "#fca5a5" }}>{breachCount} device{breachCount > 1 ? "s" : ""} require immediate attention</div>
               </div>
             </div>

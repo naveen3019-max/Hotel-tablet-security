@@ -354,7 +354,6 @@ export default function EnhancedDashboard() {
 
   const getBatteryText = (battery?: number, status?: string) => {
     if (status === "offline" || battery === undefined || battery === null || String(battery) === "null") return "Offline";
-    if (battery <= 20) return `${battery}% ⚠️`;
     return `${battery}%`;
   };
 
