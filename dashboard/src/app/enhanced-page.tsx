@@ -346,15 +346,14 @@ export default function EnhancedDashboard() {
     return "text-red-500";
   };
 
-  const getRssiText = (rssi?: number) => {
-    if (rssi === undefined || rssi === null) return "No data";
+  const getRssiText = (rssi?: number, status?: string) => {
+    if (status === "offline" || rssi === undefined || rssi === null || String(rssi) === "null") return "Offline";
     if (rssi === -127) return "No signal";
     return `${rssi} dBm`;
   };
 
-
-  const getBatteryText = (battery?: number) => {
-    if (battery === undefined) return "—";
+  const getBatteryText = (battery?: number, status?: string) => {
+    if (status === "offline" || battery === undefined || battery === null || String(battery) === "null") return "Offline";
     if (battery <= 20) return `${battery}% ⚠️`;
     return `${battery}%`;
   };
@@ -516,13 +515,13 @@ export default function EnhancedDashboard() {
                     <div className="flex justify-between items-center">
                       <span className="text-gray-600">Battery:</span>
                       <span className={getBatteryClass(d.battery)}>
-                        {getBatteryText(d.battery)}
+                        {getBatteryText(d.battery, d.status)}
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-gray-600">RSSI:</span>
                       <span className={getRssiClass(d.rssi)}>
-                        {getRssiText(d.rssi)}
+                        {getRssiText(d.rssi, d.status)}
                       </span>
                     </div>
                     <div className="flex justify-between items-center">

@@ -316,17 +316,26 @@ function DeviceCard({
   const statusColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
 
   const displayRssi = d.rssi;
-  const battColor = getBatteryColor(d.battery);
+  const battColor = isOffline ? "#64748b" : getBatteryColor(d.battery);
   const rssiColor = isOffline ? "#64748b" : getRssiColor(displayRssi);
-  const bars      = getSignalBars(displayRssi);
+  const bars      = isOffline ? 0 : getSignalBars(displayRssi);
   const ago       = timeAgo(d.lastSeen);
 
   const rssiDisplayText =
-    displayRssi === undefined || displayRssi === null
-      ? "No data"
+    isOffline
+      ? "Offline"
+      : displayRssi === undefined || displayRssi === null || String(displayRssi) === "null"
+      ? "Offline"
       : displayRssi === -127
       ? "No signal"
       : `${displayRssi}`;
+
+  const batteryDisplayText =
+    isOffline
+      ? "Offline"
+      : d.battery !== undefined && d.battery !== null && String(d.battery) !== "null"
+      ? `${d.battery}%`
+      : "Offline";
 
   return (
     <div
@@ -423,8 +432,8 @@ function DeviceCard({
             <BatteryIcon level={d.battery ?? 100} color={battColor} />
           </div>
           <div style={{ fontSize: 13, fontWeight: 700, color: battColor }}>
-            {d.battery !== undefined ? `${d.battery}%` : "—"}
-            {d.battery !== undefined && d.battery < 20 && " ⚠️"}
+            {batteryDisplayText}
+            {!isOffline && d.battery !== undefined && d.battery !== null && d.battery < 20 && " ⚠️"}
           </div>
           <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>Battery</div>
         </div>
