@@ -2182,7 +2182,6 @@ async def get_device_stats(
     all_breaches_for_hour_calc = h_data["all_breaches_for_hour_calc"]
     start_dt = h_data["start_dt"]
     end_dt = h_data["end_dt"]
-    device = h_data["device"]
     
     total_breaches = len(breach_events)
     low_battery_event_count = len(low_battery_events)
@@ -2199,31 +2198,6 @@ async def get_device_stats(
     else:
         uptime_percent = max(0.0, min(100.0, round(((total_range_seconds - total_offline_seconds) / total_range_seconds) * 100.0, 1)))
         
-    battery_points = []
-    for lb in low_battery_events:
-        if lb.get("raw_ts") and lb.get("battery_percent") is not None:
-            battery_points.append((lb["raw_ts"], lb["battery_percent"]))
-            
-    last_seen_dt = device.get("last_seen")
-    if last_seen_dt and device.get("battery") is not None:
-        if isinstance(last_seen_dt, datetime):
-            battery_points.append((last_seen_dt.replace(tzinfo=None), device["battery"]))
-            
-    battery_points.sort(key=lambda x: x[0])
-    
-    drain_rates = []
-    for i in range(len(battery_points) - 1):
-        t1, b1 = battery_points[i]
-        t2, b2 = battery_points[i+1]
-        if b2 < b1:
-            hours = (t2 - t1).total_seconds() / 3600.0
-            if hours >= 0.05:
-                rate = (b1 - b2) / hours
-                if 0.1 <= rate <= 50.0:
-                    drain_rates.append(rate)
-                    
-    avg_battery_drain_per_hour = round(sum(drain_rates) / len(drain_rates), 2) if drain_rates else None
-    
     most_common_breach_hour = None
     if len(all_breaches_for_hour_calc) >= 5:
         from collections import Counter
@@ -2240,7 +2214,6 @@ async def get_device_stats(
         "device_id": h_data["identity"]["device_id"],
         "total_breaches": total_breaches,
         "uptime_percent": uptime_percent,
-        "avg_battery_drain_per_hour": avg_battery_drain_per_hour,
         "low_battery_event_count": low_battery_event_count,
         "most_common_breach_hour": most_common_breach_hour
     }
@@ -2345,15 +2318,14 @@ def generate_device_pdf_report(device_id: str, identity: dict, stats: dict, hist
     story.append(Paragraph("Performance & Reliability Summary", h2_style))
     uptime = f"{stats.get('uptime_percent', 100.0)}%"
     total_b = str(stats.get('total_breaches', 0))
-    drain = f"{stats.get('avg_battery_drain_per_hour')}% / hr" if stats.get('avg_battery_drain_per_hour') is not None else "N/A"
     low_b_cnt = str(stats.get('low_battery_event_count', 0))
-    peak_hr = f"{stats.get('most_common_breach_hour')}:00" if stats.get('most_common_breach_hour') is not None else "None"
+    peak_hr = f"{stats.get('most_common_breach_hour')}:00" if stats.get('most_common_breach_hour') is not None else "Not enough activity yet"
     
     stats_data = [
-        [Paragraph("Total Breaches", white_bold_style), Paragraph("Uptime %", white_bold_style), Paragraph("Avg Drain / hr", white_bold_style), Paragraph("Low Battery Count", white_bold_style), Paragraph("Peak Breach Hour", white_bold_style)],
-        [Paragraph(f"<b>{total_b}</b>", normal_style), Paragraph(f"<b>{uptime}</b>", normal_style), Paragraph(f"<b>{drain}</b>", normal_style), Paragraph(f"<b>{low_b_cnt}</b>", normal_style), Paragraph(f"<b>{peak_hr}</b>", normal_style)]
+        [Paragraph("Total Breaches", white_bold_style), Paragraph("Uptime %", white_bold_style), Paragraph("Low Battery Count", white_bold_style), Paragraph("Peak Breach Hour", white_bold_style)],
+        [Paragraph(f"<b>{total_b}</b>", normal_style), Paragraph(f"<b>{uptime}</b>", normal_style), Paragraph(f"<b>{low_b_cnt}</b>", normal_style), Paragraph(f"<b>{peak_hr}</b>", normal_style)]
     ]
-    stats_table = Table(stats_data, colWidths=[108, 108, 108, 108, 108])
+    stats_table = Table(stats_data, colWidths=[135, 135, 135, 135])
     stats_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0f172a')),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
@@ -2365,6 +2337,7 @@ def generate_device_pdf_report(device_id: str, identity: dict, stats: dict, hist
     ]))
     story.append(stats_table)
     story.append(Spacer(1, 12))
+
     
     # Breach History Table
     story.append(Paragraph("Breach & Disconnection History", h2_style))

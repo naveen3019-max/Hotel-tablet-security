@@ -65,6 +65,8 @@ async def run_tests():
         assert res_stats.status_code == 200, f"Stats failed: {res_stats.text}"
         stats_json = res_stats.json()
         print("Stats Output:", json.dumps(stats_json, indent=2))
+        assert "avg_battery_drain_per_hour" not in stats_json, "avg_battery_drain_per_hour should be removed"
+
 
         # Test GET /api/devices/{device_id}/report.pdf
         res_pdf = await client.get(f"/api/devices/{test_device_id}/report.pdf")

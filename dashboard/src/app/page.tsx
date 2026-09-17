@@ -3,7 +3,6 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuth } from "../hooks/useAuth";
-import { DeviceDetailModal } from "../components/DeviceDetailModal";
 
 declare global {
   interface Window {
@@ -594,7 +593,6 @@ export default function Dashboard() {
   const [error, setError]             = useState<string | null>(null);
   const [toasts, setToasts]           = useState<Toast[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [selectedDetailDevice, setSelectedDetailDevice] = useState<Device | null>(null);
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
   const [sessionCount, setSessionCount] = useState<number>(0);
@@ -1220,7 +1218,7 @@ export default function Dashboard() {
                     key={d.deviceId}
                     d={d}
                     onDelete={(id) => setDeleteConfirm(id)}
-                    onClick={(dev) => setSelectedDetailDevice(dev)}
+                    onClick={(dev) => router.push(`/devices/${encodeURIComponent(dev.deviceId)}`)}
                   />
                 ))}
               </div>
@@ -1369,14 +1367,6 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-
-      {/* ── DEVICE DETAIL MODAL ── */}
-      <DeviceDetailModal
-        device={selectedDetailDevice}
-        isOpen={!!selectedDetailDevice}
-        onClose={() => setSelectedDetailDevice(null)}
-        apiBaseUrl={API}
-      />
 
       {/* Responsive CSS */}
       <style>{`
