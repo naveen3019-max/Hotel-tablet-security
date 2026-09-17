@@ -9,7 +9,6 @@ import {
   BatteryMedium,
   BatteryLow,
   BatteryWarning,
-  Wifi,
   WifiOff,
   SignalHigh,
   SignalMedium,
@@ -19,10 +18,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Download,
-  Clock,
   Calendar,
-  Activity,
-  FileText,
 } from "lucide-react";
 
 import RssiLineChart, { RssiDataPoint } from "@/components/RssiLineChart";
