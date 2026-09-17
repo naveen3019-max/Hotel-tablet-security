@@ -347,10 +347,11 @@ export default function EnhancedDashboard() {
   };
 
   const getRssiText = (rssi?: number) => {
-    if (rssi === undefined) return "—";
+    if (rssi === undefined || rssi === null) return "No data";
     if (rssi === -127) return "No signal";
     return `${rssi} dBm`;
   };
+
 
   const getBatteryText = (battery?: number) => {
     if (battery === undefined) return "—";

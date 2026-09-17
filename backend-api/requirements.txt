@@ -17,3 +17,5 @@ pytest
 pytest-asyncio
 pytz
 firebase-admin
+reportlab
+

@@ -1,8 +1,8 @@
-from fastapi import FastAPI, Request, Depends, HTTPException, Body, WebSocket, WebSocketDisconnect, Header  # ← NEW: Added WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Depends, HTTPException, Body, WebSocket, WebSocketDisconnect, Header, Response  # ← NEW: Added Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import time
 import pytz  # type: ignore
@@ -1973,7 +1973,502 @@ async def list_devices(authorization: str = Header(None)):
         "registeredBy": d.get("registered_by")
     } for d in devices]
 
+# --- DEVICE HISTORY, STATS & PDF REPORT ENDPOINTS ---
+
+async def fetch_device_history_data(device_id: str, start_date_str: Optional[str] = None, end_date_str: Optional[str] = None):
+    # 1. Fetch device
+    device = await devices_collection.find_one({"$or": [{"_id": device_id}, {"device_id": device_id}]})
+    if not device:
+        try:
+            device = await devices_collection.find_one({"_id": ObjectId(device_id)})
+        except Exception:
+            pass
+    if not device:
+        raise HTTPException(404, "Device not found")
+        
+    actual_device_id = str(device.get("_id"))
+    
+    # 2. Parse dates
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    
+    def parse_dt(dt_str: Optional[str], default_val: datetime) -> datetime:
+        if not dt_str:
+            return default_val
+        try:
+            if "T" in dt_str:
+                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            else:
+                dt = datetime.strptime(dt_str, "%Y-%m-%d")
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(pytz.utc).replace(tzinfo=None)
+            return dt
+        except Exception:
+            return default_val
+            
+    end_dt = parse_dt(end_date_str, now)
+    start_dt = parse_dt(start_date_str, end_dt - timedelta(days=30))
+    
+    # 3. Query alerts
+    query = {
+        "$or": [
+            {"deviceId": actual_device_id},
+            {"device_id": actual_device_id},
+            {"deviceId": device_id},
+            {"device_id": device_id}
+        ]
+    }
+    
+    raw_alerts = await alerts_collection.find(query).sort("ts", -1).to_list(1000)
+    
+    breach_events = []
+    low_battery_events = []
+    all_breaches_for_hour_calc = []
+    
+    for a in raw_alerts:
+        alert_ts = a.get("ts") or a.get("timestamp") or a.get("created_at")
+        if isinstance(alert_ts, str):
+            try:
+                alert_ts = datetime.fromisoformat(alert_ts.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                alert_ts = now
+        elif isinstance(alert_ts, datetime):
+            if alert_ts.tzinfo is not None:
+                alert_ts = alert_ts.astimezone(pytz.utc).replace(tzinfo=None)
+        else:
+            alert_ts = now
+            
+        a_type = str(a.get("type", "")).lower()
+        a_source = str(a.get("source", "")).lower()
+        a_msg = str(a.get("message", "")).lower()
+        
+        is_breach = a_type in ["breach", "offline"] or "breach" in a_type
+        is_low_battery = a_type in ["battery_low", "low_battery"] or "battery" in a_type or "battery" in a_msg
+        
+        if is_breach:
+            all_breaches_for_hour_calc.append(alert_ts)
+            
+        if start_dt <= alert_ts <= end_dt:
+            if is_breach:
+                if a_source == "heartbeat_timeout" or "heartbeat" in a_msg or "timeout" in a_msg or a_type == "offline":
+                    b_type = "heartbeat_timeout"
+                else:
+                    b_type = "rssi_threshold"
+                    
+                resolved_at_raw = a.get("resolved_at") or a.get("acknowledgedAt") or a.get("acknowledged_at")
+                resolved_dt = None
+                if resolved_at_raw:
+                    if isinstance(resolved_at_raw, str):
+                        try:
+                            resolved_dt = datetime.fromisoformat(resolved_at_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+                        except Exception:
+                            resolved_dt = None
+                    elif isinstance(resolved_at_raw, datetime):
+                        resolved_dt = resolved_at_raw.replace(tzinfo=None)
+                
+                duration_seconds = None
+                if resolved_dt:
+                    duration_seconds = max(0, int((resolved_dt - alert_ts).total_seconds()))
+                elif device.get("status") == StatusEnum.breach or device.get("status") == "breach":
+                    duration_seconds = max(0, int((min(now, end_dt) - alert_ts).total_seconds()))
+                    
+                rssi_val = a.get("rssi")
+                if rssi_val is None and "rssi" in a_msg:
+                    import re
+                    match = re.search(r'rssi:\s*(-?\d+)', a_msg)
+                    if match:
+                        rssi_val = int(match.group(1))
+                        
+                breach_events.append({
+                    "timestamp": to_ist_isoformat(alert_ts),
+                    "raw_ts": alert_ts,
+                    "breach_type": b_type,
+                    "resolved_at": to_ist_isoformat(resolved_dt) if resolved_dt else None,
+                    "duration_seconds": duration_seconds,
+                    "rssi_at_breach": rssi_val
+                })
+            elif is_low_battery:
+                batt_lvl = a.get("battery")
+                if batt_lvl is None and isinstance(a.get("payload"), dict):
+                    batt_lvl = a.get("payload", {}).get("battery")
+                if batt_lvl is None:
+                    import re
+                    match = re.search(r'(\d+)%', a_msg)
+                    if match:
+                        batt_lvl = int(match.group(1))
+                if batt_lvl is None:
+                    batt_lvl = device.get("battery", 15)
+                try:
+                    batt_lvl = int(batt_lvl)
+                except Exception:
+                    batt_lvl = 15
+                    
+                low_battery_events.append({
+                    "timestamp": to_ist_isoformat(alert_ts),
+                    "raw_ts": alert_ts,
+                    "battery_percent": batt_lvl
+                })
+                
+    room_id = device.get("roomId") or device.get("room_id")
+    room_name = room_id
+    if room_id:
+        room_doc = await rooms_collection.find_one({"_id": room_id})
+        if room_doc and room_doc.get("name"):
+            room_name = room_doc.get("name")
+            
+    identity = {
+        "device_id": actual_device_id,
+        "room": room_name or "Unassigned",
+        "status": device.get("status", "ok"),
+        "assigned_by": device.get("staff_name") or device.get("registered_by") or "Unassigned",
+        "battery": device.get("battery"),
+        "rssi": device.get("rssi")
+    }
+    
+    return {
+        "identity": identity,
+        "breach_events": breach_events,
+        "low_battery_events": low_battery_events,
+        "all_breaches_for_hour_calc": all_breaches_for_hour_calc,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "device": device
+    }
+
+@app.get("/api/devices/{device_id}/history")
+async def get_device_history(
+    device_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Fetch history of breach events and low battery events for a device"""
+    h_data = await fetch_device_history_data(device_id, start_date, end_date)
+    return {
+        "device_id": h_data["identity"]["device_id"],
+        "room": h_data["identity"]["room"],
+        "status": h_data["identity"]["status"],
+        "assigned_by": h_data["identity"]["assigned_by"],
+        "battery": h_data["identity"]["battery"],
+        "rssi": h_data["identity"]["rssi"],
+        "breach_events": [
+            {
+                "timestamp": b["timestamp"],
+                "breach_type": b["breach_type"],
+                "resolved_at": b["resolved_at"],
+                "duration_seconds": b["duration_seconds"],
+                "rssi_at_breach": b["rssi_at_breach"]
+            }
+            for b in h_data["breach_events"]
+        ],
+        "low_battery_events": [
+            {
+                "timestamp": lb["timestamp"],
+                "battery_percent": lb["battery_percent"]
+            }
+            for lb in h_data["low_battery_events"]
+        ]
+    }
+
+@app.get("/api/devices/{device_id}/stats")
+async def get_device_stats(
+    device_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Fetch computed stats for a device within a date range"""
+    h_data = await fetch_device_history_data(device_id, start_date, end_date)
+    
+    breach_events = h_data["breach_events"]
+    low_battery_events = h_data["low_battery_events"]
+    all_breaches_for_hour_calc = h_data["all_breaches_for_hour_calc"]
+    start_dt = h_data["start_dt"]
+    end_dt = h_data["end_dt"]
+    device = h_data["device"]
+    
+    total_breaches = len(breach_events)
+    low_battery_event_count = len(low_battery_events)
+    
+    total_offline_seconds = 0
+    for b in breach_events:
+        dur = b.get("duration_seconds")
+        if dur:
+            total_offline_seconds += dur
+            
+    total_range_seconds = (end_dt - start_dt).total_seconds()
+    if total_range_seconds <= 0:
+        uptime_percent = 100.0
+    else:
+        uptime_percent = max(0.0, min(100.0, round(((total_range_seconds - total_offline_seconds) / total_range_seconds) * 100.0, 1)))
+        
+    battery_points = []
+    for lb in low_battery_events:
+        if lb.get("raw_ts") and lb.get("battery_percent") is not None:
+            battery_points.append((lb["raw_ts"], lb["battery_percent"]))
+            
+    last_seen_dt = device.get("last_seen")
+    if last_seen_dt and device.get("battery") is not None:
+        if isinstance(last_seen_dt, datetime):
+            battery_points.append((last_seen_dt.replace(tzinfo=None), device["battery"]))
+            
+    battery_points.sort(key=lambda x: x[0])
+    
+    drain_rates = []
+    for i in range(len(battery_points) - 1):
+        t1, b1 = battery_points[i]
+        t2, b2 = battery_points[i+1]
+        if b2 < b1:
+            hours = (t2 - t1).total_seconds() / 3600.0
+            if hours >= 0.05:
+                rate = (b1 - b2) / hours
+                if 0.1 <= rate <= 50.0:
+                    drain_rates.append(rate)
+                    
+    avg_battery_drain_per_hour = round(sum(drain_rates) / len(drain_rates), 2) if drain_rates else None
+    
+    most_common_breach_hour = None
+    if len(all_breaches_for_hour_calc) >= 5:
+        from collections import Counter
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        utc_tz = pytz.timezone('UTC')
+        hours = []
+        for b_dt in all_breaches_for_hour_calc:
+            localized = utc_tz.localize(b_dt).astimezone(ist_tz)
+            hours.append(localized.hour)
+        counts = Counter(hours)
+        most_common_breach_hour = counts.most_common(1)[0][0]
+        
+    return {
+        "device_id": h_data["identity"]["device_id"],
+        "total_breaches": total_breaches,
+        "uptime_percent": uptime_percent,
+        "avg_battery_drain_per_hour": avg_battery_drain_per_hour,
+        "low_battery_event_count": low_battery_event_count,
+        "most_common_breach_hour": most_common_breach_hour
+    }
+
+def generate_device_pdf_report(device_id: str, identity: dict, stats: dict, history: dict, start_date_str: str, end_date_str: str) -> bytes:
+    import io
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=36,
+        leftMargin=36,
+        topMargin=36,
+        bottomMargin=36
+    )
+    story = []
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle(
+        'DocTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        leading=24,
+        textColor=colors.HexColor('#0f172a'),
+        fontName='Helvetica-Bold',
+        spaceAfter=4
+    )
+    subtitle_style = ParagraphStyle(
+        'DocSubtitle',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor('#64748b'),
+        spaceAfter=10
+    )
+    h2_style = ParagraphStyle(
+        'SectionHeader',
+        parent=styles['Heading2'],
+        fontSize=13,
+        leading=16,
+        textColor=colors.HexColor('#1e293b'),
+        fontName='Helvetica-Bold',
+        spaceBefore=10,
+        spaceAfter=6
+    )
+    normal_style = ParagraphStyle(
+        'BodyNormal',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor('#334155')
+    )
+    white_bold_style = ParagraphStyle(
+        'WhiteBold',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=12,
+        textColor=colors.white,
+        fontName='Helvetica-Bold'
+    )
+    
+    # Title / Header
+    story.append(Paragraph("Hotel Tablet Security System", title_style))
+    story.append(Paragraph(f"Device Audit & Performance Report — <b>{device_id}</b>", subtitle_style))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#3b82f6'), spaceAfter=12))
+    
+    # Identity Table
+    room_name = identity.get("room") or "Unassigned"
+    status_str = str(identity.get("status") or "ok").upper()
+    assigned = identity.get("assigned_by") or "Unassigned"
+    battery_str = f"{identity.get('battery')}%" if identity.get('battery') is not None else "N/A"
+    rssi_val = identity.get('rssi')
+    rssi_str = f"{rssi_val} dBm" if rssi_val is not None else "N/A"
+    gen_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S IST")
+    
+    meta_data = [
+        [Paragraph("<b>Device ID:</b>", normal_style), Paragraph(device_id, normal_style),
+         Paragraph("<b>Room:</b>", normal_style), Paragraph(room_name, normal_style)],
+        [Paragraph("<b>Current Status:</b>", normal_style), Paragraph(f"<b>{status_str}</b>", normal_style),
+         Paragraph("<b>Assigned Staff:</b>", normal_style), Paragraph(assigned, normal_style)],
+        [Paragraph("<b>Battery Level:</b>", normal_style), Paragraph(battery_str, normal_style),
+         Paragraph("<b>Signal (RSSI):</b>", normal_style), Paragraph(rssi_str, normal_style)],
+        [Paragraph("<b>Report Range:</b>", normal_style), Paragraph(f"{start_date_str} to {end_date_str}", normal_style),
+         Paragraph("<b>Generated At:</b>", normal_style), Paragraph(gen_time, normal_style)]
+    ]
+    meta_table = Table(meta_data, colWidths=[110, 160, 110, 160])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f8fafc')),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#e2e8f0')),
+        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#f1f5f9')),
+        ('PADDING', (0,0), (-1,-1), 5),
+    ]))
+    story.append(meta_table)
+    story.append(Spacer(1, 10))
+    
+    # Stats Summary Section
+    story.append(Paragraph("Performance & Reliability Summary", h2_style))
+    uptime = f"{stats.get('uptime_percent', 100.0)}%"
+    total_b = str(stats.get('total_breaches', 0))
+    drain = f"{stats.get('avg_battery_drain_per_hour')}% / hr" if stats.get('avg_battery_drain_per_hour') is not None else "N/A"
+    low_b_cnt = str(stats.get('low_battery_event_count', 0))
+    peak_hr = f"{stats.get('most_common_breach_hour')}:00" if stats.get('most_common_breach_hour') is not None else "None"
+    
+    stats_data = [
+        [Paragraph("Total Breaches", white_bold_style), Paragraph("Uptime %", white_bold_style), Paragraph("Avg Drain / hr", white_bold_style), Paragraph("Low Battery Count", white_bold_style), Paragraph("Peak Breach Hour", white_bold_style)],
+        [Paragraph(f"<b>{total_b}</b>", normal_style), Paragraph(f"<b>{uptime}</b>", normal_style), Paragraph(f"<b>{drain}</b>", normal_style), Paragraph(f"<b>{low_b_cnt}</b>", normal_style), Paragraph(f"<b>{peak_hr}</b>", normal_style)]
+    ]
+    stats_table = Table(stats_data, colWidths=[108, 108, 108, 108, 108])
+    stats_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0f172a')),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BACKGROUND', (0,1), (-1,1), colors.HexColor('#f1f5f9')),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#cbd5e1')),
+        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#e2e8f0')),
+        ('PADDING', (0,0), (-1,-1), 6),
+    ]))
+    story.append(stats_table)
+    story.append(Spacer(1, 12))
+    
+    # Breach History Table
+    story.append(Paragraph("Breach & Disconnection History", h2_style))
+    breaches = history.get("breach_events", [])
+    if breaches:
+        breach_rows = [[
+            Paragraph("Timestamp (IST)", white_bold_style),
+            Paragraph("Breach Type", white_bold_style),
+            Paragraph("Duration", white_bold_style),
+            Paragraph("RSSI", white_bold_style),
+            Paragraph("Status / Resolved At", white_bold_style)
+        ]]
+        for b in breaches:
+            ts = b.get("timestamp", "N/A")
+            b_type = b.get("breach_type", "N/A").replace("_", " ").title()
+            dur = f"{b.get('duration_seconds')}s" if b.get('duration_seconds') is not None else "Active / Unknown"
+            r_rssi = f"{b.get('rssi_at_breach')} dBm" if b.get('rssi_at_breach') is not None else "N/A"
+            res = b.get("resolved_at") or "Active Breach"
+            breach_rows.append([
+                Paragraph(str(ts), normal_style),
+                Paragraph(b_type, normal_style),
+                Paragraph(dur, normal_style),
+                Paragraph(r_rssi, normal_style),
+                Paragraph(str(res), normal_style)
+            ])
+        b_table = Table(breach_rows, colWidths=[120, 110, 80, 70, 160])
+        b_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#ef4444')),
+            ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#fca5a5')),
+            ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#fee2e2')),
+            ('PADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(b_table)
+    else:
+        story.append(Paragraph("<i>No breach events recorded in this date range.</i>", normal_style))
+        
+    story.append(Spacer(1, 12))
+    
+    # Low Battery Events Table
+    story.append(Paragraph("Low Battery Events", h2_style))
+    batt_events = history.get("low_battery_events", [])
+    if batt_events:
+        batt_rows = [[
+            Paragraph("Timestamp (IST)", white_bold_style),
+            Paragraph("Battery Level", white_bold_style)
+        ]]
+        for e in batt_events:
+            ts = e.get("timestamp", "N/A")
+            bp = f"{e.get('battery_percent')}%"
+            batt_rows.append([Paragraph(str(ts), normal_style), Paragraph(bp, normal_style)])
+        batt_table = Table(batt_rows, colWidths=[300, 240])
+        batt_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f59e0b')),
+            ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#fde68a')),
+            ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#fef3c7')),
+            ('PADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(batt_table)
+    else:
+        story.append(Paragraph("<i>No low battery events recorded in this date range.</i>", normal_style))
+        
+    story.append(Spacer(1, 15))
+    footer_text = f"Generated by Hotel Tablet Security System — {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d')}"
+    story.append(Paragraph(f"<i>{footer_text}</i>", subtitle_style))
+    
+    doc.build(story)
+    return buffer.getvalue()
+
+@app.get("/api/devices/{device_id}/report.pdf")
+async def get_device_pdf_report_endpoint(
+    device_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Generate and return downloadable PDF report for a device"""
+    h_data = await fetch_device_history_data(device_id, start_date, end_date)
+    stats_data = await get_device_stats(device_id, start_date, end_date)
+    
+    start_date_display = start_date or (h_data["start_dt"].strftime("%Y-%m-%d"))
+    end_date_display = end_date or (h_data["end_dt"].strftime("%Y-%m-%d"))
+    
+    pdf_bytes = generate_device_pdf_report(
+        device_id=h_data["identity"]["device_id"],
+        identity=h_data["identity"],
+        stats=stats_data,
+        history={
+            "breach_events": h_data["breach_events"],
+            "low_battery_events": h_data["low_battery_events"]
+        },
+        start_date_str=start_date_display,
+        end_date_str=end_date_display
+    )
+    
+    filename = f"device_{h_data['identity']['device_id']}_report.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
 # Delete device (Owner only)
+
 @app.delete("/api/devices/{device_id}")
 async def delete_device(device_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a device - Owner dashboard feature"""

@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAuth } from "../hooks/useAuth";
+import { DeviceDetailModal } from "../components/DeviceDetailModal";
 
 declare global {
   interface Window {
@@ -297,12 +298,15 @@ function StatCard({
 }
 
 // ─── DEVICE CARD ──────────────────────────────────────────────────────────────
+// ─── DEVICE CARD ──────────────────────────────────────────────────────────────
 function DeviceCard({
   d,
   onDelete,
+  onClick,
 }: {
   d: Device;
   onDelete: (id: string) => void;
+  onClick?: (d: Device) => void;
 }) {
   const isOffline = isDeviceOffline(d);
   const isBreach  = isDeviceBreached(d);
@@ -312,15 +316,23 @@ function DeviceCard({
   const statusLabel  = isBreach ? "BREACH" : isOffline ? "OFFLINE" : "SECURE";
   const statusColor  = isBreach ? "#ef4444" : isOffline ? "#f59e0b" : "#22c55e";
 
-  const displayRssi = isOffline ? undefined : d.rssi;
+  const displayRssi = d.rssi;
   const battColor = getBatteryColor(d.battery);
-  const rssiColor = getRssiColor(displayRssi);
+  const rssiColor = isOffline ? "#64748b" : getRssiColor(displayRssi);
   const bars      = getSignalBars(displayRssi);
   const ago       = timeAgo(d.lastSeen);
+
+  const rssiDisplayText =
+    displayRssi === undefined || displayRssi === null
+      ? "No data"
+      : displayRssi === -127
+      ? "No signal"
+      : `${displayRssi}`;
 
   return (
     <div
       className={isBreach ? "animate-breach-pulse" : "card-hover"}
+      onClick={() => onClick?.(d)}
       style={{
         background: isBreach ? "rgba(239,68,68,0.05)" : "#141b2d",
         border: isBreach
@@ -331,6 +343,7 @@ function DeviceCard({
         padding: 20,
         position: "relative",
         transition: "border-color 0.2s, transform 0.2s",
+        cursor: "pointer",
       }}
     >
       {/* Top row */}
@@ -379,7 +392,10 @@ function DeviceCard({
             </span>
           </div>
           <button
-            onClick={() => onDelete(d.deviceId)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(d.deviceId);
+            }}
             style={{
               background: "none",
               border: "none",
@@ -420,10 +436,11 @@ function DeviceCard({
             <WifiIcon bars={bars} color={rssiColor} />
           </div>
           <div style={{ fontSize: 13, fontWeight: 700, color: rssiColor }}>
-            {displayRssi === undefined ? "null" : displayRssi === -127 ? "None" : `${displayRssi}`}
+            {rssiDisplayText}
           </div>
           <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>dBm</div>
         </div>
+
 
         {/* Last seen */}
         <div style={{ textAlign: "center", padding: "8px 4px", background: "rgba(255,255,255,0.02)", borderRadius: 8 }}>
@@ -577,6 +594,7 @@ export default function Dashboard() {
   const [error, setError]             = useState<string | null>(null);
   const [toasts, setToasts]           = useState<Toast[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [selectedDetailDevice, setSelectedDetailDevice] = useState<Device | null>(null);
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [visibleAlertsCount, setVisibleAlertsCount] = useState<number>(50);
   const [sessionCount, setSessionCount] = useState<number>(0);
@@ -1198,7 +1216,12 @@ export default function Dashboard() {
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 {filteredDevices.map((d) => (
-                  <DeviceCard key={d.deviceId} d={d} onDelete={(id) => setDeleteConfirm(id)} />
+                  <DeviceCard
+                    key={d.deviceId}
+                    d={d}
+                    onDelete={(id) => setDeleteConfirm(id)}
+                    onClick={(dev) => setSelectedDetailDevice(dev)}
+                  />
                 ))}
               </div>
             )}
@@ -1346,6 +1369,14 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* ── DEVICE DETAIL MODAL ── */}
+      <DeviceDetailModal
+        device={selectedDetailDevice}
+        isOpen={!!selectedDetailDevice}
+        onClose={() => setSelectedDetailDevice(null)}
+        apiBaseUrl={API}
+      />
 
       {/* Responsive CSS */}
       <style>{`
