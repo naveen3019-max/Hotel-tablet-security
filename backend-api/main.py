@@ -2431,12 +2431,13 @@ async def get_device_pdf_report_endpoint(
         end_date_str=end_date_display
     )
     
-    filename = f"device_{h_data['identity']['device_id']}_report.pdf"
+    filename = f"device-report-{h_data['identity']['device_id']}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
         }
     )
 

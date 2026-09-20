@@ -152,7 +152,7 @@ export default function DeviceDetailPage() {
     }
   }, [deviceId, startDate, endDate, fetchData]);
 
-  // PDF download handler
+  // PDF download handler (supports Desktop & Mobile Chrome / Safari)
   const handleDownloadPdf = async () => {
     if (!deviceId) return;
     setDownloadingPdf(true);
@@ -163,21 +163,35 @@ export default function DeviceDetailPage() {
       }
       const pdfUrl = `${apiBaseUrl}/api/devices/${encodeURIComponent(deviceId)}/report.pdf${queryParams}`;
 
-      const res = await fetch(pdfUrl);
-      if (!res.ok) throw new Error("Failed to generate PDF");
+      const isMobile = typeof navigator !== "undefined" && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile) {
+        // Mobile browsers (iOS Safari / Android Chrome) handle attachment downloads best when opened directly in a tab
+        window.open(pdfUrl, "_blank");
+      } else {
+        const res = await fetch(pdfUrl);
+        if (!res.ok) throw new Error("Failed to generate PDF");
 
-      const blob = await res.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = `device_${deviceId}_report.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(downloadUrl);
+        const blob = await res.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = `device-report-${deviceId}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(downloadUrl);
+      }
     } catch (err) {
-      console.error("PDF download failed:", err);
-      alert("Could not download PDF report. Please try again.");
+      console.error("PDF download failed, falling back to direct URL launch:", err);
+      try {
+        let queryParams = "";
+        if (startDate && endDate) {
+          queryParams = `?start_date=${startDate}&end_date=${endDate}`;
+        }
+        window.open(`${apiBaseUrl}/api/devices/${encodeURIComponent(deviceId)}/report.pdf${queryParams}`, "_blank");
+      } catch (fallbackErr) {
+        alert("Could not download PDF report. Please try again.");
+      }
     } finally {
       setDownloadingPdf(false);
     }
