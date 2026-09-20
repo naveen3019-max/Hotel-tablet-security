@@ -189,7 +189,7 @@ export default function DeviceDetailPage() {
           queryParams = `?start_date=${startDate}&end_date=${endDate}`;
         }
         window.open(`${apiBaseUrl}/api/devices/${encodeURIComponent(deviceId)}/report.pdf${queryParams}`, "_blank");
-      } catch (fallbackErr) {
+      } catch {
         alert("Could not download PDF report. Please try again.");
       }
     } finally {
