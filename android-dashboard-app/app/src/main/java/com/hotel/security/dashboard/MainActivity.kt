@@ -35,6 +35,12 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.os.SystemClock
 
+import android.app.DownloadManager
+import android.os.Environment
+import android.webkit.URLUtil
+import android.webkit.WebChromeClient
+import android.widget.Toast
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
@@ -119,8 +125,11 @@ class MainActivity : AppCompatActivity() {
             databaseEnabled = true
             loadWithOverviewMode = true
             useWideViewPort = true
+            textZoom = 100
             builtInZoomControls = false
             setSupportZoom(false)
+            javaScriptCanOpenWindowsAutomatically = true
+            setSupportMultipleWindows(true)
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
@@ -137,6 +146,38 @@ class MainActivity : AppCompatActivity() {
             "HotelSecurityBridge"
         )
         
+        // Bug 2 Fix: Wire up DownloadListener for PDF reports
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            downloadPdf(url, userAgent, contentDisposition, mimeType)
+        }
+
+        // Handle window.open / target="_blank" link popups
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?
+            ): Boolean {
+                val newWebView = WebView(this@MainActivity)
+                newWebView.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                        val url = request.url.toString()
+                        if (url.contains("/report.pdf") || url.endsWith(".pdf")) {
+                            downloadPdf(url, webView.settings.userAgentString, null, "application/pdf")
+                        } else {
+                            webView.loadUrl(url)
+                        }
+                        return true
+                    }
+                }
+                val transport = resultMsg?.obj as? WebView.WebViewTransport
+                transport?.webView = newWebView
+                resultMsg?.sendToTarget()
+                return true
+            }
+        }
+        
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 progressBar.visibility = View.VISIBLE
@@ -150,6 +191,15 @@ class MainActivity : AppCompatActivity() {
                 injectBridgeWithRetry()
             }
             
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+                if (url.contains("/report.pdf") || url.endsWith(".pdf")) {
+                    downloadPdf(url, view.settings.userAgentString, null, "application/pdf")
+                    return true
+                }
+                return super.shouldOverrideUrlLoading(view, request)
+            }
+            
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) {
                     showErrorLayout()
@@ -158,6 +208,56 @@ class MainActivity : AppCompatActivity() {
         }
         
         webView.loadUrl(DASHBOARD_URL)
+    }
+
+    private fun downloadPdf(url: String, userAgent: String?, contentDisposition: String?, mimeType: String?) {
+        try {
+            if (url.startsWith("blob:") || url.startsWith("data:")) {
+                Toast.makeText(this, "Generating PDF report...", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                val resolvedMime = if (!mimeType.isNullOrEmpty() && mimeType != "application/octet-stream") mimeType else "application/pdf"
+                setMimeType(resolvedMime)
+
+                val ua = if (!userAgent.isNullOrEmpty()) userAgent else webView.settings.userAgentString
+                addRequestHeader("User-Agent", ua)
+
+                // Forward session cookies from CookieManager
+                val cookies = CookieManager.getInstance().getCookie(url)
+                if (!cookies.isNullOrEmpty()) {
+                    addRequestHeader("Cookie", cookies)
+                }
+
+                // Forward auth token if saved in SharedPreferences
+                val token = getSharedPreferences("hotel_dashboard_prefs", MODE_PRIVATE)
+                    .getString("auth_token", null)
+                if (!token.isNullOrEmpty()) {
+                    addRequestHeader("Authorization", "Bearer $token")
+                }
+
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setTitle("Device Security Report")
+                setDescription("Downloading PDF Report...")
+
+                val fileName = URLUtil.guessFileName(url, contentDisposition, resolvedMime)
+                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+            }
+
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            dm.enqueue(request)
+
+            Toast.makeText(this, "📥 Downloading PDF report... Check notifications or Downloads folder.", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Log.e("MainActivity", "DownloadManager failed: ${e.message}, attempting external browser fallback")
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                startActivity(intent)
+            } catch (ex: Exception) {
+                Toast.makeText(this, "Could not download PDF report: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
     
     private fun injectTokenBridgeScript() {
