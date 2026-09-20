@@ -173,3 +173,38 @@ html, body {
   transform: translateY(-2px);
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
+
+/* Responsive layout grids */
+.main-dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (min-width: 1024px) {
+  .main-dashboard-grid {
+    grid-template-columns: 3fr 2fr;
+  }
+}
+
+.device-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+@media (min-width: 640px) {
+  .device-cards-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.detail-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+}
+@media (min-width: 1024px) {
+  .detail-charts-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

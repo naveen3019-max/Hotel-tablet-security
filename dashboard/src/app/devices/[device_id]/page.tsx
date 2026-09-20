@@ -805,10 +805,8 @@ export default function DeviceDetailPage() {
 
         {/* ─── CHARTS SECTION ────────────────────────────────────────────────── */}
         <section
+          className="detail-charts-grid"
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(480px, 1fr))",
-            gap: "24px",
             marginBottom: "32px",
           }}
         >

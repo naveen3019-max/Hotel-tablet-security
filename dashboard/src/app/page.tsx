@@ -1163,8 +1163,8 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* ── TWO COLUMN LAYOUT ── */}
-        <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 20, alignItems: "start" }}>
+        {/* ── RESPONSIVE TWO COLUMN LAYOUT ── */}
+        <div className="main-dashboard-grid">
 
           {/* ── LEFT: Device Fleet ── */}
           <div>
@@ -1224,7 +1224,7 @@ export default function Dashboard() {
                 No devices match your search criteria.
               </div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div className="device-cards-grid">
                 {filteredDevices.map((d) => (
                   <DeviceCard
                     key={d.deviceId}
